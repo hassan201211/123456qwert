@@ -23,19 +23,23 @@ jobs:
         run: | 
           agvtool new-version -all $(git rev-parse HEAD)
           
-          # 1. حذف ملفات Package.resolved لمنع تعارضات الذاكرة في Xcode
+          # 1. تنظيف كاش الحزم
           find . -name "Package.resolved" -delete
-          
-          # 2. حذف كاشات SPM المؤقتة
           rm -rf ~/Library/Caches/org.swift.swiftpm
           rm -rf .build
           
-          # 3. ترتيب الحزم الآن بعد تنظيف الكاش
+          # 2. ترتيب وإعادة جلب الحزم
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
           
-          # 4. تنظيف الملفات المؤقتة والبناء الفعلي (مع استثناء معمارية إنتل المسببة للخطأ)
-          xcodebuild clean -project Feather.xcodeproj -scheme Feather
-          make ARCHS="arm64" ONLY_ACTIVE_ARCH=YES EXCLUDED_ARCHS="x86_64"
+          # 3. البناء الصريح باستخدام xcodebuild وتجاهل x86_64 
+          xcodebuild clean build \
+            -project Feather.xcodeproj \
+            -scheme Feather \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            EXCLUDED_ARCHS="x86_64" \
+            CODE_SIGNING_ALLOWED=NO \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
 
       - name: Get Version
         id: get_version
