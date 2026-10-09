@@ -22,11 +22,19 @@ jobs:
       - name: Build
         run: | 
           agvtool new-version -all $(git rev-parse HEAD)
-          # إضافة أمر ترتيب الحزم قبل البناء
+          
+          # 1. حذف ملفات Package.resolved لمنع تعارضات الذاكرة في Xcode
+          find . -name "Package.resolved" -delete
+          
+          # 2. حذف كاشات SPM المؤقتة
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf .build
+          
+          # 3. ترتيب الحزم الآن بعد تنظيف الكاش
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
-          # تنظيف الملفات المؤقتة لتفادي الانهيار
+          
+          # 4. تنظيف الملفات المؤقتة والبناء الفعلي
           xcodebuild clean -project Feather.xcodeproj -scheme Feather
-          # البناء الفعلي
           make
 
       - name: Get Version
