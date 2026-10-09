@@ -33,9 +33,9 @@ jobs:
           # 3. ترتيب الحزم الآن بعد تنظيف الكاش
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
           
-          # 4. تنظيف الملفات المؤقتة والبناء الفعلي
+          # 4. تنظيف الملفات المؤقتة والبناء الفعلي (مع استثناء معمارية إنتل المسببة للخطأ)
           xcodebuild clean -project Feather.xcodeproj -scheme Feather
-          make
+          make ARCHS="arm64" ONLY_ACTIVE_ARCH=YES EXCLUDED_ARCHS="x86_64"
 
       - name: Get Version
         id: get_version
