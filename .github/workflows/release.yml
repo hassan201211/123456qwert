@@ -31,7 +31,7 @@ jobs:
           # 2. ترتيب وإعادة جلب الحزم
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
           
-          # 3. البناء الصريح باستخدام xcodebuild وتجاهل x86_64 
+          # 3. البناء الصريح باستخدام xcodebuild وتحديد مسار المخرجات
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
@@ -39,7 +39,17 @@ jobs:
             -destination "generic/platform=iOS" \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
+            CONFIGURATION_BUILD_DIR=${PWD}/build_output
+            
+          # 4. التغليف اليدوي للتطبيق (لحل مشكلة خطوة الإصدار)
+          mkdir -p _build/Payload
+          cp -r build_output/*.app _build/Payload/
+          
+          # 5. تجهيز ملف التطبيق النهائي
+          mkdir -p packages
+          cd _build
+          zip -r ../packages/Feather.ipa Payload
 
       - name: Get Version
         id: get_version
