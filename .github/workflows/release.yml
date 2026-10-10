@@ -42,11 +42,11 @@ jobs:
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
             CONFIGURATION_BUILD_DIR=${PWD}/build_output
             
-          # 4. التغليف اليدوي وإنشاء مجلد Payload
+          # 4. إنشاء مجلد التغليف ونسخ التطبيق
           mkdir -p _build/Payload
           cp -r build_output/*.app _build/Payload/
           
-          # 5. ضغط المجلد وإنشاء ملف Feather.ipa داخل packages
+          # 5. ضغط الملف وإنشاء Feather.ipa داخل مجلد packages
           mkdir -p packages
           cd _build
           zip -r ../packages/Feather.ipa Payload
@@ -58,13 +58,11 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Create Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3.0.2
         with:
-          name: Feather v${{ env.VERSION }}
+          name: Feather ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          files: |
-            packages/Feather.ipa
+          files: packages/Feather.ipa
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: false
