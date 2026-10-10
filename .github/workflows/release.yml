@@ -31,7 +31,7 @@ jobs:
           # 2. ترتيب وإعادة جلب الحزم
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
           
-          # 3. البناء الصريح باستخدام xcodebuild وتحديد مسار المخرجات
+          # 3. البناء الصريح وتحديد مسار المخرجات
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
@@ -42,11 +42,11 @@ jobs:
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
             CONFIGURATION_BUILD_DIR=${PWD}/build_output
             
-          # 4. التغليف اليدوي للتطبيق (لحل مشكلة خطوة الإصدار)
+          # 4. التغليف اليدوي وإنشاء مجلد Payload
           mkdir -p _build/Payload
           cp -r build_output/*.app _build/Payload/
           
-          # 5. تجهيز ملف التطبيق النهائي
+          # 5. ضغط المجلد وإنشاء ملف Feather.ipa داخل packages
           mkdir -p packages
           cd _build
           zip -r ../packages/Feather.ipa Payload
@@ -62,11 +62,11 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3.0.2
         with:
           name: Feather v${{ env.VERSION }}
-          tag_name: v${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
           files: |
-            packages/*
+            packages/Feather.ipa
           generate_release_notes: true
           fail_on_unmatched_files: true
-          draft: true
+          draft: false
         env:
-          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
