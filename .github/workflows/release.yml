@@ -37,14 +37,14 @@ jobs:
             -scheme Feather \
             -configuration Release \
             -destination "generic/platform=iOS" \
-            -ARCHS="arm64" \
-            -CODE_SIGNING_ALLOWED=NO \
-            -ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
-            -CONFIGURATION_BUILD_DIR=${PWD}/build_output
+            EXCLUDED_ARCHS="x86_64" \
+            CODE_SIGNING_ALLOWED=NO \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
+            -derivedDataPath ./build_output
             
           # 4. إنشاء مجلد التغليف ونسخ التطبيق
           mkdir -p _build/Payload
-          cp -r build_output/*.app _build/Payload/
+          cp -r build_output/Build/Products/Release-iphoneos/*.app _build/Payload/
           
           # 5. ضغط الملف وإنشاء Room.ipa داخل مجلد packages
           mkdir -p packages
