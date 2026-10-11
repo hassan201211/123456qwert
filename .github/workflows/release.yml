@@ -19,25 +19,25 @@ jobs:
         run: |
           sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
 
+      - name: Force Clean SPM Cache
+        run: |
+          # مسح ملفات الكاش القديمة التي تسبب تعارضات Array Index في Xcode 16+
+          find . -name "Package.resolved" -delete
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf .build
+          rm -rf ~/Library/Developer/Xcode/DerivedData
+
       - name: Build
         run: | 
           agvtool new-version -all $(git rev-parse HEAD)
           
-          # تنظيف كامل للمشروع لضمان تطبيق الاسم والأيقونة الجديدة
-          xcodebuild clean -project Feather.xcodeproj -scheme Feather
-          find . -name "Package.resolved" -delete
-          rm -rf ~/Library/Caches/org.swift.swiftpm
-          rm -rf .build
-          
-          # جلب الحزم
-          xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
-          
-          # البناء مع تحديد مسار مخرجات مستقل
-          xcodebuild build \
+          # البناء مع تحديد مسار مخرجات مستقل وتخطي الجلب المسبق المعيب
+          xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
             -configuration Release \
             -destination "generic/platform=iOS" \
+            -resolvePackageDependencies \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
@@ -46,6 +46,12 @@ jobs:
           # البحث عن التطبيق المبني ونسخه لتجهيزه للضغط
           mkdir -p _build/Payload
           APP_PATH=$(find ./build_output/Build/Products -name "*.app" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find .app file in build_output."
+            exit 1
+          fi
+          
           cp -r "$APP_PATH" _build/Payload/
           
           # ضغط التطبيق باسم Room.ipa
