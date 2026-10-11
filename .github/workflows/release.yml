@@ -31,7 +31,7 @@ jobs:
           # 2. ترتيب وإعادة جلب الحزم
           xcodebuild -project Feather.xcodeproj -scheme Feather -resolvePackageDependencies
           
-          # 3. البناء وتحديد مسار المخرجات
+          # 3. البناء الصريح وتحديد مسار المخرجات
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
@@ -46,7 +46,7 @@ jobs:
           mkdir -p _build/Payload
           cp -r build_output/*.app _build/Payload/
           
-          # 5. ضغط وتوليد Room.ipa داخل مجلد packages
+          # 5. ضغط الملف وإنشاء Room.ipa داخل مجلد packages
           mkdir -p packages
           cd _build
           zip -r ../packages/Room.ipa Payload
