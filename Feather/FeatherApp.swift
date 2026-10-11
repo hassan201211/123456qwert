@@ -24,8 +24,8 @@ struct FeatherApp: App {
                 DownloadHeaderView(downloadManager: downloadManager)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 
-                // هنا نكتفي باستدعاء الواجهة التي صممناها في TabEnum
-                VariedTabbarView()
+                // هنا الحل: استخدام شريط النظام الأساسي فقط ليطابق متجر آبل وإلغاء الشريط المزدوج
+                TabbarView()
                     .environment(\.managedObjectContext, storage.context)
                     .onOpenURL(perform: _handleURL)
                     .transition(.move(edge: .top).combined(with: .opacity))
