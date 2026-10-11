@@ -15,55 +15,31 @@ jobs:
         with:
           submodules: 'true'
 
-      - name: Prepare dependencies (Xcode)
+      - name: Build and Package
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
-
-      - name: Force Clean SPM Cache
-        run: |
-          # مسح ملفات الكاش القديمة التي تسبب تعارضات Array Index في Xcode 16+
-          find . -name "Package.resolved" -delete
-          rm -rf ~/Library/Caches/org.swift.swiftpm
-          rm -rf .build
-          rm -rf ~/Library/Developer/Xcode/DerivedData
-
-      - name: Build
-        run: | 
+          # 1. إعطاء رقم إصدار عشوائي/تلقائي
           agvtool new-version -all $(git rev-parse HEAD)
-          
-          # البناء مع تحديد مسار مخرجات مستقل وتخطي الجلب المسبق المعيب
+
+          # 2. بناء التطبيق داخل مجلد _build الافتراضي
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
             -configuration Release \
             -destination "generic/platform=iOS" \
-            -resolvePackageDependencies \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
-            -derivedDataPath ./build_output
-            
-          # البحث عن التطبيق المبني ونسخه لتجهيزه للضغط
-          mkdir -p _build/Payload
-          APP_PATH=$(find ./build_output/Build/Products -name "*.app" | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find .app file in build_output."
-            exit 1
-          fi
-          
-          cp -r "$APP_PATH" _build/Payload/
-          
-          # ضغط التطبيق باسم Room.ipa
-          mkdir -p packages
-          cd _build
-          zip -r ../packages/Room.ipa Payload
+            SYMROOT="${PWD}/_build"
 
-      - name: Get Version
-        id: get_version
-        run: |
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist)
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          # 3. تجهيز مجلد التثبيت Payload
+          mkdir -p Payload
+          
+          # نسخ ملف .app من مسار المخرجات الحقيقي
+          cp -R _build/Release-iphoneos/*.app Payload/
+
+          # 4. ضغط الحزمة باسم Room.ipa
+          mkdir -p packages
+          zip -r packages/Room.ipa Payload
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
