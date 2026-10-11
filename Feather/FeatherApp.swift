@@ -20,12 +20,14 @@ struct FeatherApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ZStack(alignment: .top) {
-                AppStoreTabBarView()
+            VStack {
+                DownloadHeaderView(downloadManager: downloadManager)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                
+                // هنا نكتفي باستدعاء الواجهة التي صممناها في TabEnum
+                VariedTabbarView()
                     .environment(\.managedObjectContext, storage.context)
                     .onOpenURL(perform: _handleURL)
-                
-                DownloadHeaderView(downloadManager: downloadManager)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             .animation(.smooth, value: downloadManager.manualDownloads.description)
@@ -47,7 +49,6 @@ struct FeatherApp: App {
         }
     }
     
-    // ... [نفس دالة _handleURL القديمة بدون تغيير] ...
     private func _handleURL(_ url: URL) {
         if url.scheme == "feather" {
             if url.host == "import-certificate" {
@@ -127,7 +128,6 @@ struct FeatherApp: App {
     }
 }
 
-// ... [نفس كلاس AppDelegate القديم بدون تغيير] ...
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         _createPipeline()
@@ -180,64 +180,5 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             }
             UserDefaults.standard.set(true, forKey: "feather.didImportDefaultCertificates")
         } catch { Logger.misc.error("Failed to list signing-assets: \(error)") }
-    }
-}
-
-// MARK: - واجهة متجر آبل الجديدة (AppStoreTabBarView)
-struct AppStoreTabBarView: View {
-    @State private var showSettings = false
-    
-    var body: some View {
-        NavigationView {
-            TabView {
-                // قسم اليوم (مؤقتاً يعرض واجهة Feather القديمة حتى لا يتعطل التطبيق)
-                VariedTabbarView()
-                    .tabItem {
-                        Image(systemName: "doc.text.image")
-                        Text("اليوم")
-                    }
-                
-                Text("الألعاب قريباً")
-                    .tabItem {
-                        Image(systemName: "gamecontroller.fill")
-                        Text("الألعاب")
-                    }
-                
-                Text("التطبيقات قريباً")
-                    .tabItem {
-                        Image(systemName: "square.stack.3d.up.fill")
-                        Text("التطبيقات")
-                    }
-                
-                Text("المصادر قريباً")
-                    .tabItem {
-                        Image(systemName: "square.grid.2x2.fill")
-                        Text("المصادر")
-                    }
-                
-                Text("البحث قريباً")
-                    .tabItem {
-                        Image(systemName: "magnifyingglass")
-                        Text("البحث")
-                    }
-            }
-            // زر النجمة في الأعلى
-            .navigationBarItems(leading:
-                Button(action: {
-                    showSettings = true
-                }) {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(Circle().fill(Color.blue))
-                }
-            )
-            .sheet(isPresented: $showSettings) {
-                // فتح صفحة الإعدادات
-                SettingsView()
-            }
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
     }
 }
