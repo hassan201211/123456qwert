@@ -366,7 +366,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Feather/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Feather;
+				INFOPLIST_KEY_CFBundleDisplayName = Room;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (c) 2024 Samara M";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -388,8 +388,8 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
 				MARKETING_VERSION = "$(FEATHER_PROJECT_VERSION)-debug";
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FEATHER_PRODUCT_BUNDLE_IDENTIFIER)$(FEATHER_DISAMBIGUATOR)";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "thewonderofyou.Room";
+				PRODUCT_NAME = Room;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
 				STRIP_INSTALLED_PRODUCT = NO;
@@ -430,7 +430,7 @@
 				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Feather/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Feather;
+				INFOPLIST_KEY_CFBundleDisplayName = Room;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (c) 2024 Samara M";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -452,8 +452,8 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
 				MARKETING_VERSION = "$(FEATHER_PROJECT_VERSION)";
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FEATHER_PRODUCT_BUNDLE_IDENTIFIER)";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "thewonderofyou.Room";
+				PRODUCT_NAME = Room;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
 				STRIPFLAGS = "-rSTx";
