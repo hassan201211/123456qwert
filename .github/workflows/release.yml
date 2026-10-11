@@ -15,12 +15,21 @@ jobs:
         with:
           submodules: 'true'
 
-      - name: Build and Package
+      - name: Prepare dependencies (Xcode)
         run: |
-          # 1. إعطاء رقم إصدار عشوائي/تلقائي
-          agvtool new-version -all $(git rev-parse HEAD)
+          sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
 
-          # 2. بناء التطبيق داخل مجلد _build الافتراضي
+      - name: Force Clean SPM Cache
+        run: |
+          find . -name "Package.resolved" -delete
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf .build
+
+      - name: Build
+        run: | 
+          agvtool new-version -all $(git rev-parse HEAD)
+          
+          # البناء بدون تحديد مسار مخرجات، نترك Xcode يستخدم مساره الافتراضي
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
@@ -28,18 +37,32 @@ jobs:
             -destination "generic/platform=iOS" \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
-            SYMROOT="${PWD}/_build"
-
-          # 3. تجهيز مجلد التثبيت Payload
-          mkdir -p Payload
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+            
+          # البحث عن ملف التطبيق في كل المجلدات
+          mkdir -p _build/Payload
           
-          # نسخ ملف .app من مسار المخرجات الحقيقي
-          cp -R _build/Release-iphoneos/*.app Payload/
-
-          # 4. ضغط الحزمة باسم Room.ipa
+          echo "البحث عن التطبيق..."
+          APP_PATH=$(find . -name "Room.app" -o -name "Feather.app" | grep -v "IntermediateBuildFiles" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find .app file."
+            exit 1
+          fi
+          
+          echo "تم العثور على التطبيق في: $APP_PATH"
+          cp -r "$APP_PATH" _build/Payload/
+          
+          # ضغط التطبيق باسم Room.ipa
           mkdir -p packages
-          zip -r packages/Room.ipa Payload
+          cd _build
+          zip -r ../packages/Room.ipa Payload
+
+      - name: Get Version
+        id: get_version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist)
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
