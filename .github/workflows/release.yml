@@ -24,23 +24,33 @@ jobs:
         run: |
           git submodule update --init --recursive --force
 
-      - name: Resolve Package Dependencies
+      - name: Deep Clean SPM and Xcode Cache
         run: |
-          xcodebuild -resolvePackageDependencies -workspace Feather.xcworkspace -scheme Feather
+          # مسح كاش عميق لتجنب أخطاء Xcode الداخلية
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf ~/Library/org.swift.swiftpm
+          rm -rf ~/Library/Developer/Xcode/DerivedData
+          find . -name ".build" -exec rm -rf {} +
+          find . -name "Package.resolved" -delete
+          
+          # تهيئة المكتبات بصمت لتجنب أخطاء المصفوفة (Array error)
+          xcodebuild -resolvePackageDependencies -workspace Feather.xcworkspace -scheme Feather -quiet
 
       - name: Compile Feather
         run: | 
           mkdir -p Zsign
           echo "MIT License" > Zsign/LICENSE_LC
           agvtool new-version -all $(git rev-parse HEAD)
+          
+          # تم إضافة -disableAutomaticPackageResolution لمنع التحديث التلقائي أثناء البناء
           make
+          
           mkdir -p upload
           mv packages/* upload/
 
       - name: Extract Version
         id: get_version
         run: |
-          # استخراج الإصدار من ملف الـ Info.plist بعد البناء
           VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" upload/Payload/*.app/Info.plist 2>/dev/null || echo "1.0")
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
