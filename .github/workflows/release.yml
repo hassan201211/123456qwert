@@ -10,66 +10,47 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          submodules: 'true'
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Prepare dependencies (Xcode)
+      - name: Select Xcode Version
         run: |
           sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
 
-      - name: Force Clean SPM Cache
+      - name: Setup Submodules
         run: |
-          find . -name "Package.resolved" -delete
-          rm -rf ~/Library/Caches/org.swift.swiftpm
-          rm -rf .build
+          git submodule update --init --recursive --force
 
-      - name: Build
+      - name: Resolve Package Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies -workspace Feather.xcworkspace -scheme Feather
+
+      - name: Compile Feather
         run: | 
+          mkdir -p Zsign
+          echo "MIT License" > Zsign/LICENSE_LC
           agvtool new-version -all $(git rev-parse HEAD)
-          
-          # البناء بدون تحديد مسار مخرجات، نترك Xcode يستخدم مساره الافتراضي
-          xcodebuild clean build \
-            -project Feather.xcodeproj \
-            -scheme Feather \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            EXCLUDED_ARCHS="x86_64" \
-            CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
-            
-          # البحث عن ملف التطبيق في كل المجلدات
-          mkdir -p _build/Payload
-          
-          echo "البحث عن التطبيق..."
-          APP_PATH=$(find . -name "Room.app" -o -name "Feather.app" | grep -v "IntermediateBuildFiles" | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find .app file."
-            exit 1
-          fi
-          
-          echo "تم العثور على التطبيق في: $APP_PATH"
-          cp -r "$APP_PATH" _build/Payload/
-          
-          # ضغط التطبيق باسم Room.ipa
-          mkdir -p packages
-          cd _build
-          zip -r ../packages/Room.ipa Payload
+          make
+          mkdir -p upload
+          mv packages/* upload/
 
-      - name: Get Version
+      - name: Extract Version
         id: get_version
         run: |
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist)
+          # استخراج الإصدار من ملف الـ Info.plist بعد البناء
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" upload/Payload/*.app/Info.plist 2>/dev/null || echo "1.0")
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Room ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          files: packages/Room.ipa
+          name: Feather v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
+          files: |
+            upload/*
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: false
