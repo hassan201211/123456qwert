@@ -26,32 +26,49 @@ jobs:
 
       - name: Deep Clean SPM and Xcode Cache
         run: |
-          # مسح كاش عميق لتجنب أخطاء Xcode الداخلية
           rm -rf ~/Library/Caches/org.swift.swiftpm
           rm -rf ~/Library/org.swift.swiftpm
           rm -rf ~/Library/Developer/Xcode/DerivedData
           find . -name ".build" -exec rm -rf {} +
           find . -name "Package.resolved" -delete
           
-          # تهيئة المكتبات بصمت لتجنب أخطاء المصفوفة (Array error)
+          # تهيئة المكتبات بصمت
           xcodebuild -resolvePackageDependencies -workspace Feather.xcworkspace -scheme Feather -quiet
 
-      - name: Compile Feather
+      - name: Build App (iOS Only)
         run: | 
-          mkdir -p Zsign
-          echo "MIT License" > Zsign/LICENSE_LC
           agvtool new-version -all $(git rev-parse HEAD)
           
-          # تم إضافة -disableAutomaticPackageResolution لمنع التحديث التلقائي أثناء البناء
-          make
+          # البناء للآيفون حصراً لتجنب أخطاء Mac Catalyst
+          xcodebuild clean build \
+            -workspace Feather.xcworkspace \
+            -scheme Feather \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "./build_output" \
+            EXCLUDED_ARCHS="x86_64" \
+            CODE_SIGNING_ALLOWED=NO \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+            
+          # تجهيز ملف IPA
+          mkdir -p packages
+          mkdir -p _build/Payload
           
-          mkdir -p upload
-          mv packages/* upload/
+          APP_PATH=$(find ./build_output -name "*.app" | grep -v "IntermediateBuildFiles" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find .app file."
+            exit 1
+          fi
+          
+          cp -r "$APP_PATH" _build/Payload/
+          cd _build
+          zip -r ../packages/Room.ipa Payload
 
       - name: Extract Version
         id: get_version
         run: |
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" upload/Payload/*.app/Info.plist 2>/dev/null || echo "1.0")
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist 2>/dev/null || echo "1.0")
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Create Release
@@ -59,8 +76,7 @@ jobs:
         with:
           name: Feather v${{ env.VERSION }}
           tag_name: v${{ env.VERSION }}-${{ github.run_number }}
-          files: |
-            upload/*
+          files: packages/Room.ipa
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: false
