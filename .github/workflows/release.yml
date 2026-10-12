@@ -15,9 +15,9 @@ jobs:
         with:
           submodules: 'true'
 
-      - name: Select Xcode 15.4
+      - name: Select Xcode 16
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app
+          sudo xcode-select -s /Applications/Xcode_16.0.app
 
       - name: Build App
         run: |
@@ -32,7 +32,8 @@ jobs:
             -derivedDataPath "./build_output" \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
+            SWIFT_VERSION=5.0
             
           mkdir -p _build/Payload
           APP_PATH=$(find ./build_output -name "*.app" | grep -v "IntermediateBuildFiles" | head -n 1)
