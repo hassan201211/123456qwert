@@ -27,7 +27,7 @@ jobs:
 
       - name: Build
         run: | 
-          agvtool new-version -all $(git rev-parse HEAD)
+          agvtool new-version -all ${{ github.run_number }}
           
           # البناء مع تحديد مسار مخرجات ثابت (build) حتى نندل مكان التطبيق
           xcodebuild clean build \
