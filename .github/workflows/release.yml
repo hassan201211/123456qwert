@@ -29,7 +29,7 @@ jobs:
         run: | 
           agvtool new-version -all $(git rev-parse HEAD)
           
-          # البناء بدون تحديد مسار مخرجات، نترك Xcode يستخدم مساره الافتراضي
+          # البناء مع تحديد مسار مخرجات ثابت (build) حتى نندل مكان التطبيق
           xcodebuild clean build \
             -project Feather.xcodeproj \
             -scheme Feather \
@@ -37,16 +37,18 @@ jobs:
             -destination "generic/platform=iOS" \
             EXCLUDED_ARCHS="x86_64" \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
+            CONFIGURATION_BUILD_DIR="$PWD/build"
             
-          # البحث عن ملف التطبيق في كل المجلدات
+          # تجهيز مجلد الـ Payload
           mkdir -p _build/Payload
           
           echo "البحث عن التطبيق..."
-          APP_PATH=$(find . -name "Room.app" -o -name "Feather.app" | grep -v "IntermediateBuildFiles" | head -n 1)
+          # البحث في المسار اللي حددناه فوك
+          APP_PATH=$(find "$PWD/build" -name "Room.app" -o -name "Feather.app" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find .app file."
+            echo "Error: Could not find .app file. تأكد من نجاح عملية xcodebuild."
             exit 1
           fi
           
