@@ -26,6 +26,16 @@ struct TabbarView: View {
 		animation: .snappy
 	) private var signedApps: FetchedResults<Signed>
 
+	init() {
+		Self.applyOptimalInstallDefaults()
+	}
+
+	static func applyOptimalInstallDefaults() {
+		UserDefaults.standard.set(0, forKey: "Feather.installationMethod")
+		UserDefaults.standard.set(0, forKey: "Feather.serverMethod")
+		UserDefaults.standard.set(false, forKey: "Feather.ipFix")
+	}
+
 	var body: some View {
 		ZStack(alignment: .bottom) {
 			TabView(selection: $selectedTab) {
@@ -38,7 +48,6 @@ struct TabbarView: View {
 				}
 			}
 
-			// الشريط العائم العام فوق التبويبات عند الخروج من صفحة التطبيق أثناء التحميل والتوقيع
 			if roomStoreVM.installStage != .idle, let activeApp = roomStoreVM.activeApp {
 				RoomFloatingInstallBar(
 					app: activeApp,
@@ -57,6 +66,7 @@ struct TabbarView: View {
 		}
 		.animation(.spring(response: 0.35, dampingFraction: 0.85), value: roomStoreVM.installStage)
 		.task {
+			Self.applyOptimalInstallDefaults()
 			roomStoreVM.syncOwnedFromSigned(signedApps)
 			await roomStoreVM.fetchApps()
 		}
@@ -331,6 +341,8 @@ final class RoomIPADownloader: NSObject, URLSessionDownloadDelegate {
 		super.init()
 		let config = URLSessionConfiguration.default
 		config.waitsForConnectivity = true
+		config.timeoutIntervalForRequest = 60
+		config.timeoutIntervalForResource = 600
 		self.session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
 	}
 
@@ -387,7 +399,6 @@ class RoomStoreViewModel: ObservableObject {
 	@Published var ownedKeys: Set<String> = []
 	@Published var isLoading = false
 
-	// حالة التوقيع والتثبيت الصامت
 	@Published var activeApp: RoomStoreApp? = nil
 	@Published var installStage: InstallStage = .idle
 	@Published var progressValue: Double = 0.0
@@ -397,7 +408,6 @@ class RoomStoreViewModel: ObservableObject {
 	private var progressTimer: Timer? = nil
 	private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
-	// خادم التثبيت المباشر في الخلفية بدون فتح متصفح خارجي
 	private var activeStatusVM: InstallerStatusViewModel? = nil
 	private var activeServerInstaller: ServerInstaller? = nil
 	private var activeITunesURL: URL? = nil
@@ -540,16 +550,28 @@ class RoomStoreViewModel: ObservableObject {
 		#endif
 	}
 
-	/// بدء التحميل + التوقيع الصامت + إظهار نافذة التثبيت الوسطية مباشرة بدون Safari
+	private func startSmoothProgress(cap: Double, step: Double = 0.01) {
+		progressTimer?.invalidate()
+		progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+			Task { @MainActor in
+				guard let self, self.installStage == .signing else { return }
+				if self.progressValue < cap {
+					self.progressValue = min(cap, self.progressValue + step)
+				}
+			}
+		}
+	}
+
 	func startSilentSignAndInstall(
 		app: RoomStoreApp,
 		certificate: CertificatePair?,
-		importedApps: FetchedResults<Imported>,
-		signedApps: FetchedResults<Signed>
+		context: NSManagedObjectContext
 	) {
+		TabbarView.applyOptimalInstallDefaults()
+
 		let options = OptionsManager.shared.options
 		guard certificate != nil || options.signingOption != .default else {
-			errorMessage = "لا توجد شهادة توقيع مفعّلة. يرجى الدخول إلى الإعدادات ← الشهادات وإضافة شهادة صالحة أولاً."
+			errorMessage = "يرجى إضافة شهادة توقيع واحدة فقط في الإعدادات ← الشهادات أولاً."
 			return
 		}
 
@@ -568,8 +590,8 @@ class RoomStoreViewModel: ObservableObject {
 		let downloader = RoomIPADownloader(
 			onProgress: { [weak self] dlRatio in
 				guard let self, self.installStage == .downloading else { return }
-				// التحميل: من 2% إلى 65%
-				self.progressValue = 0.02 + (dlRatio * 0.63)
+				// مرحلة التحميل: 2% إلى 55%
+				self.progressValue = 0.02 + (dlRatio * 0.53)
 			},
 			onCompletion: { [weak self] result in
 				guard let self else { return }
@@ -585,8 +607,7 @@ class RoomStoreViewModel: ObservableObject {
 						localIPAURL: localIPAURL,
 						app: app,
 						certificate: certificate,
-						importedApps: importedApps,
-						signedApps: signedApps
+						context: context
 					)
 				}
 			}
@@ -600,13 +621,22 @@ class RoomStoreViewModel: ObservableObject {
 		localIPAURL: URL,
 		app: RoomStoreApp,
 		certificate: CertificatePair?,
-		importedApps: FetchedResults<Imported>,
-		signedApps: FetchedResults<Signed>
+		context: NSManagedObjectContext
 	) {
 		installStage = .signing
-		progressValue = 0.67
-		let existingImportedUUIDs = Set(importedApps.compactMap(\.uuid))
-		let existingSignedUUIDs = Set(signedApps.compactMap(\.uuid))
+		progressValue = 0.57
+		startSmoothProgress(cap: 0.72, step: 0.01)
+
+		context.refreshAllObjects()
+		let impReq = Imported.fetchRequest()
+		impReq.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
+		let initialImported = (try? context.fetch(impReq)) ?? []
+		let existingImportedUUIDs = Set(initialImported.compactMap(\.uuid))
+
+		let sigReq = Signed.fetchRequest()
+		sigReq.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
+		let initialSigned = (try? context.fetch(sigReq)) ?? []
+		let existingSignedUUIDs = Set(initialSigned.compactMap(\.uuid))
 
 		let importID = "RoomSilent_\(UUID().uuidString)"
 		let dl = DownloadManager.shared.startArchive(from: localIPAURL, id: importID)
@@ -618,35 +648,29 @@ class RoomStoreViewModel: ObservableObject {
 			return
 		}
 
-		progressTimer?.invalidate()
-		progressTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-			Task { @MainActor in
-				guard let self, self.installStage == .signing else { return }
-				if self.progressValue < 0.96 {
-					self.progressValue += 0.01
-				}
-			}
-		}
-
 		Task {
-			// انتظار ظهور التطبيق الجديد المستورد (حتى 60 ثانية للملفات الكبيرة مثل 500MB)
 			var targetImported: Imported? = nil
-			for _ in 0..<240 {
+			for _ in 0..<300 {
 				if self.installStage == .idle { return }
-				if let found = importedApps.first(where: { !existingImportedUUIDs.contains($0.uuid ?? "") }) {
+				context.refreshAllObjects()
+				let currentImported = (try? context.fetch(impReq)) ?? []
+				if let found = currentImported.first(where: { !existingImportedUUIDs.contains($0.uuid ?? "") }) {
 					targetImported = found
 					break
 				}
-				try? await Task.sleep(nanoseconds: 250_000_000)
+				try? await Task.sleep(nanoseconds: 200_000_000)
 			}
 
+			try? FileManager.default.removeItem(at: localIPAURL)
+
 			guard let importedApp = targetImported else {
-				self.errorMessage = "استغرق فك ضغط التطبيق وقتاً طويلاً، حاول مرة أخرى."
+				self.errorMessage = "تعذر تجهيز ملف التطبيق، حاول مرة أخرى."
 				self.cancelSilentInstall()
 				return
 			}
 
-			self.progressValue = 0.78
+			self.progressValue = 0.74
+			self.startSmoothProgress(cap: 0.88, step: 0.008)
 			let options = OptionsManager.shared.options
 
 			FR.signPackageFile(
@@ -657,8 +681,6 @@ class RoomStoreViewModel: ObservableObject {
 			) { [weak self] signError in
 				DispatchQueue.main.async {
 					guard let self else { return }
-					self.progressTimer?.invalidate()
-					self.progressTimer = nil
 
 					if let signError {
 						self.errorMessage = "فشل التوقيع: \(signError.localizedDescription)"
@@ -670,26 +692,39 @@ class RoomStoreViewModel: ObservableObject {
 						Storage.shared.deleteApp(for: importedApp)
 					}
 
-					self.progressValue = 1.0
-					self.installStage = .readyToInstall
-					self.markAsOwned(app)
-					UINotificationFeedbackGenerator().notificationOccurred(.success)
+					self.progressValue = 0.90
+					self.startSmoothProgress(cap: 0.98, step: 0.01)
 
-					// تجهيز السيرفر المحلي وإطلاق نافذة iOS الوسطية مباشرة بدون متصفح خارجي
 					Task {
-						try? await Task.sleep(nanoseconds: 350_000_000)
-						let newestSigned = signedApps.first(where: { !existingSignedUUIDs.contains($0.uuid ?? "") }) ?? signedApps.first
-						if let newestSigned {
-							await self.triggerDirectNativeInstall(for: newestSigned)
+						var newestSigned: Signed? = nil
+						for _ in 0..<60 {
+							if self.installStage == .idle { return }
+							context.refreshAllObjects()
+							let currentSigned = (try? context.fetch(sigReq)) ?? []
+							if let found = currentSigned.first(where: { !existingSignedUUIDs.contains($0.uuid ?? "") }) {
+								newestSigned = found
+								break
+							}
+							try? await Task.sleep(nanoseconds: 200_000_000)
 						}
+
+						guard let signedApp = newestSigned ?? ((try? context.fetch(sigReq))?.first) else {
+							self.errorMessage = "اكتمل التوقيع، يمكنك تثبيت التطبيق من المكتبة."
+							self.cancelSilentInstall()
+							return
+						}
+
+						await self.triggerDirectNativeInstall(for: signedApp, storeApp: app)
 					}
 				}
 			}
 		}
 	}
 
-	private func triggerDirectNativeInstall(for signedApp: Signed) async {
+	private func triggerDirectNativeInstall(for signedApp: Signed, storeApp: RoomStoreApp) async {
 		do {
+			TabbarView.applyOptimalInstallDefaults()
+
 			let statusVM = InstallerStatusViewModel(isIdevice: false)
 			let server = try ServerInstaller(app: signedApp, viewModel: statusVM)
 			self.activeStatusVM = statusVM
@@ -702,13 +737,20 @@ class RoomStoreViewModel: ObservableObject {
 			server.packageUrl = packageUrl
 			statusVM.status = .ready
 
+			self.progressTimer?.invalidate()
+			self.progressTimer = nil
+			self.progressValue = 1.0
+			self.installStage = .readyToInstall
+			self.markAsOwned(storeApp)
+			UINotificationFeedbackGenerator().notificationOccurred(.success)
+
 			if let itunesURL = URL(string: server.iTunesLink) {
 				self.activeITunesURL = itunesURL
 				await UIApplication.shared.open(itunesURL)
 			}
 
-			// إبقاء السيرفر والصوت الخلفي نشطين 60 ثانية لضمان اكتمال التثبيت حتى لو خرج المستخدم من التطبيق
-			try? await Task.sleep(nanoseconds: 60_000_000_000)
+			// إبقاء السيرفر والصوت الخلفي نشطين 90 ثانية لضمان اكتمال التثبيت على الشاشة الرئيسية حتى عند الخروج من التطبيق
+			try? await Task.sleep(nanoseconds: 90_000_000_000)
 			if self.installStage == .readyToInstall {
 				self.installStage = .idle
 				self.activeApp = nil
@@ -723,6 +765,7 @@ class RoomStoreViewModel: ObservableObject {
 	}
 
 	func reopenNativeInstallPrompt() {
+		TabbarView.applyOptimalInstallDefaults()
 		if let url = activeITunesURL {
 			UIApplication.shared.open(url)
 		}
@@ -1422,6 +1465,7 @@ struct RoomAppDetailView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 
 	@Environment(\.dismiss) private var dismiss
+	@Environment(\.managedObjectContext) private var viewContext
 	@State private var selectedTab = 0
 	@State private var copiedBundle = false
 	@State private var showReportAlert = false
@@ -1432,18 +1476,6 @@ struct RoomAppDetailView: View {
 		sortDescriptors: [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)],
 		animation: .snappy
 	) private var certificates: FetchedResults<CertificatePair>
-
-	@FetchRequest(
-		entity: Signed.entity(),
-		sortDescriptors: [NSSortDescriptor(keyPath: \Signed.date, ascending: false)],
-		animation: .snappy
-	) private var signedApps: FetchedResults<Signed>
-
-	@FetchRequest(
-		entity: Imported.entity(),
-		sortDescriptors: [NSSortDescriptor(keyPath: \Imported.date, ascending: false)],
-		animation: .snappy
-	) private var importedApps: FetchedResults<Imported>
 
 	private var activeCertificate: CertificatePair? {
 		let storedCert = UserDefaults.standard.integer(forKey: "feather.selectedCert")
@@ -1688,7 +1720,6 @@ struct RoomAppDetailView: View {
 			}
 			.ignoresSafeArea(edges: .top)
 
-			// أزرار التنقل العلوية
 			VStack {
 				HStack {
 					Button { dismiss() } label: {
@@ -1720,7 +1751,6 @@ struct RoomAppDetailView: View {
 				Spacer()
 			}
 
-			// المنطقة السفلية: بطاقة التقدم العائمة + شريط الأزرار
 			VStack(spacing: 10) {
 				if isThisAppActive {
 					RoomFloatingInstallBar(
@@ -1743,8 +1773,7 @@ struct RoomAppDetailView: View {
 							viewModel.startSilentSignAndInstall(
 								app: app,
 								certificate: activeCertificate,
-								importedApps: importedApps,
-								signedApps: signedApps
+								context: viewContext
 							)
 						}
 					} label: {
@@ -1839,7 +1868,7 @@ struct RoomAppDetailView: View {
 	}
 }
 
-// MARK: - 7. المكونات المساعدة (الشريط العائم + مؤشر التحميل الدائري + شارة ممتلك)
+// MARK: - 7. المكونات المساعدة
 struct RoomFloatingInstallBar: View {
 	let app: RoomStoreApp
 	@ObservedObject var viewModel: RoomStoreViewModel
@@ -1948,7 +1977,6 @@ struct RoomAppActionBadge: View {
 
 	var body: some View {
 		if viewModel.isAppInProgress(app) {
-			// دائرة تحميل وتوقيع متحركة بجانب التطبيق في القائمة
 			ZStack {
 				Circle()
 					.stroke(Color.white.opacity(0.18), lineWidth: 2.5)
