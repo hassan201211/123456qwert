@@ -7,6 +7,8 @@
 
 import SwiftUI
 import UIKit
+import CoreData
+import NimbleViews
 
 struct TabbarView: View {
 	@State private var selectedTab: TabEnum = TabEnum.defaultTabs.first {
@@ -271,13 +273,83 @@ struct RoomStoreRepo: Codable {
 	let apps: [RoomStoreApp]
 }
 
+// MARK: - أداة تحميل الـ IPA مع تتبع النسبة المئوية في الخلفية
+final class RoomIPADownloader: NSObject, URLSessionDownloadDelegate {
+	private var session: URLSession?
+	private var task: URLSessionDownloadTask?
+	private let onProgress: (Double) -> Void
+	private let onCompletion: (Result<URL, Error>) -> Void
+
+	init(onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<URL, Error>) -> Void) {
+		self.onProgress = onProgress
+		self.onCompletion = onCompletion
+		super.init()
+		let config = URLSessionConfiguration.default
+		config.waitsForConnectivity = true
+		self.session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+	}
+
+	func start(url: URL) {
+		let downloadTask = session?.downloadTask(with: url)
+		self.task = downloadTask
+		downloadTask?.resume()
+	}
+
+	func cancel() {
+		task?.cancel()
+		session?.invalidateAndCancel()
+	}
+
+	func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+		guard totalBytesExpectedToWrite > 0 else { return }
+		let ratio = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+		onProgress(min(max(ratio, 0.0), 1.0))
+	}
+
+	func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+		do {
+			let destURL = FileManager.default.temporaryDirectory.appendingPathComponent("Room_\(UUID().uuidString).ipa")
+			if FileManager.default.fileExists(atPath: destURL.path) {
+				try FileManager.default.removeItem(at: destURL)
+			}
+			try FileManager.default.moveItem(at: location, to: destURL)
+			onCompletion(.success(destURL))
+		} catch {
+			onCompletion(.failure(error))
+		}
+		session.finishTasksAndInvalidate()
+	}
+
+	func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+		if let error {
+			onCompletion(.failure(error))
+			session.finishTasksAndInvalidate()
+		}
+	}
+}
+
 @MainActor
 class RoomStoreViewModel: ObservableObject {
+	enum InstallStage: Equatable {
+		case idle
+		case signing // يشمل التحميل + التوقيع الصامت بنسبة 0%..100%
+		case readyToInstall
+	}
+
 	@Published var allApps: [RoomStoreApp] = []
 	@Published var favoriteIDs: Set<String> = []
-	@Published var downloadingAppID: String? = nil
-	@Published var readyToSignAppID: String? = nil
 	@Published var isLoading = false
+
+	// حالة التوقيع والتثبيت الصامت
+	@Published var activeApp: RoomStoreApp? = nil
+	@Published var installStage: InstallStage = .idle
+	@Published var progressValue: Double = 0.0
+	@Published var errorMessage: String? = nil
+	@Published var signedInstallSheetApp: AnyApp? = nil
+
+	private var activeDownloader: RoomIPADownloader? = nil
+	private var progressTimer: Timer? = nil
+	private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
 	private let defaultRepoURL = "https://raw.githubusercontent.com/hassan201211/123456qwert/refs/heads/main/apps.json"
 
@@ -343,20 +415,194 @@ class RoomStoreViewModel: ObservableObject {
 		}
 	}
 
-	func startInstall(_ app: RoomStoreApp) {
-		guard let url = URL(string: app.downloadURL), !app.downloadURL.isEmpty, downloadingAppID == nil else { return }
-		downloadingAppID = app.id
-		readyToSignAppID = nil
-		_ = DownloadManager.shared.startDownload(from: url, id: app.id)
+	func cancelSilentInstall() {
+		activeDownloader?.cancel()
+		activeDownloader = nil
+		progressTimer?.invalidate()
+		progressTimer = nil
+		installStage = .idle
+		progressValue = 0.0
+		activeApp = nil
+		endBackgroundTask()
+	}
+
+	private func beginBackgroundTask() {
+		endBackgroundTask()
+		backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "RoomSilentSignInstall") { [weak self] in
+			Task { @MainActor in
+				self?.endBackgroundTask()
+			}
+		}
+	}
+
+	private func endBackgroundTask() {
+		if backgroundTaskID != .invalid {
+			UIApplication.shared.endBackgroundTask(backgroundTaskID)
+			backgroundTaskID = .invalid
+		}
+	}
+
+	/// بدء التحميل + التوقيع الصامت + التثبيت المباشر في الخلفية
+	func startSilentSignAndInstall(
+		app: RoomStoreApp,
+		certificate: CertificatePair?,
+		importedApps: FetchedResults<Imported>,
+		signedApps: FetchedResults<Signed>
+	) {
+		let options = OptionsManager.shared.options
+		guard certificate != nil || options.signingOption != .default else {
+			errorMessage = "لا توجد شهادة توقيع مفعّلة. يرجى الدخول إلى الإعدادات ← الشهادات وإضافة شهادة صالحة أولاً."
+			return
+		}
+
+		guard let url = URL(string: app.downloadURL), !app.downloadURL.isEmpty else {
+			errorMessage = "رابط تحميل هذا التطبيق غير متوفر حالياً."
+			return
+		}
+
+		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+		beginBackgroundTask()
+
+		activeApp = app
+		installStage = .signing
+		progressValue = 0.02
+
+		let downloader = RoomIPADownloader(
+			onProgress: { [weak self] dlRatio in
+				guard let self, self.installStage == .signing else { return }
+				// المرحلة 1: التحميل يمثل من 2% إلى 65%
+				self.progressValue = 0.02 + (dlRatio * 0.63)
+			},
+			onCompletion: { [weak self] result in
+				guard let self else { return }
+				self.activeDownloader = nil
+				switch result {
+				case .failure(let error):
+					if (error as NSError).code != NSURLErrorCancelled {
+						self.errorMessage = "فشل تحميل ملف التطبيق: \(error.localizedDescription)"
+					}
+					self.cancelSilentInstall()
+				case .success(let localIPAURL):
+					self.importAndSignSilently(
+						localIPAURL: localIPAURL,
+						app: app,
+						certificate: certificate,
+						importedApps: importedApps,
+						signedApps: signedApps
+					)
+				}
+			}
+		)
+
+		self.activeDownloader = downloader
+		downloader.start(url: url)
+	}
+
+	private func importAndSignSilently(
+		localIPAURL: URL,
+		app: RoomStoreApp,
+		certificate: CertificatePair?,
+		importedApps: FetchedResults<Imported>,
+		signedApps: FetchedResults<Signed>
+	) {
+		progressValue = 0.68
+		let existingImportedUUIDs = Set(importedApps.compactMap(\.uuid))
+		let existingSignedUUIDs = Set(signedApps.compactMap(\.uuid))
+
+		let importID = "RoomSilent_\(UUID().uuidString)"
+		let dl = DownloadManager.shared.startArchive(from: localIPAURL, id: importID)
+		do {
+			try DownloadManager.shared.handlePachageFile(url: localIPAURL, dl: dl)
+		} catch {
+			errorMessage = "تعذر قراءة حزمة الـ IPA: \(error.localizedDescription)"
+			cancelSilentInstall()
+			return
+		}
+
+		// تحريك شريط التقدم بسلاسة أثناء فك الضغط والتوقيع
+		progressTimer?.invalidate()
+		progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+			Task { @MainActor in
+				guard let self, self.installStage == .signing else { return }
+				if self.progressValue < 0.95 {
+					self.progressValue += 0.015
+				}
+			}
+		}
 
 		Task {
-			try? await Task.sleep(nanoseconds: 800_000_000)
-			while DownloadManager.shared.getDownload(by: app.id) != nil {
-				try? await Task.sleep(nanoseconds: 500_000_000)
+			// انتظار ظهور التطبيق المستورد في قاعدة البيانات
+			var targetImported: Imported? = nil
+			for _ in 0..<32 {
+				if let found = importedApps.first(where: { !existingImportedUUIDs.contains($0.uuid ?? "") }) {
+					targetImported = found
+					break
+				}
+				try? await Task.sleep(nanoseconds: 250_000_000)
 			}
-			self.downloadingAppID = nil
-			self.readyToSignAppID = app.id
+
+			if targetImported == nil {
+				targetImported = importedApps.first
+			}
+
+			guard let importedApp = targetImported else {
+				self.errorMessage = "تعذر تجهيز التطبيق للتوقيع."
+				self.cancelSilentInstall()
+				return
+			}
+
+			self.progressValue = 0.76
+			let options = OptionsManager.shared.options
+
+			FR.signPackageFile(
+				importedApp,
+				using: options,
+				icon: nil,
+				certificate: certificate
+			) { [weak self] signError in
+				DispatchQueue.main.async {
+					guard let self else { return }
+					self.progressTimer?.invalidate()
+					self.progressTimer = nil
+
+					if let signError {
+						self.errorMessage = "فشل التوقيع: \(signError.localizedDescription)"
+						self.cancelSilentInstall()
+						return
+					}
+
+					// حذف النسخة غير الموقعة المؤقتة
+					if !importedApp.isSigned {
+						Storage.shared.deleteApp(for: importedApp)
+					}
+
+					self.progressValue = 1.0
+					self.installStage = .readyToInstall
+					UINotificationFeedbackGenerator().notificationOccurred(.success)
+
+					// العثور على التطبيق الموقّع وتشغيل نافذة التثبيت الأصلية فوراً
+					Task {
+						try? await Task.sleep(nanoseconds: 350_000_000)
+						let newestSigned = signedApps.first(where: { !existingSignedUUIDs.contains($0.uuid ?? "") }) ?? signedApps.first
+						if let newestSigned {
+							self.signedInstallSheetApp = AnyApp(base: newestSigned)
+						}
+						NotificationCenter.default.post(name: Notification.Name("Feather.installApp"), object: nil)
+
+						// إبقاء السيرفر والمهمة الخلفية نشطين 45 ثانية لضمان اكتمال التثبيت حتى بعد الخروج للشاشة الرئيسية
+						try? await Task.sleep(nanoseconds: 45_000_000_000)
+						self.endBackgroundTask()
+					}
+				}
+			}
 		}
+	}
+
+	func triggerInstallPromptAgain(signedApps: FetchedResults<Signed>) {
+		if let latest = signedApps.first {
+			signedInstallSheetApp = AnyApp(base: latest)
+		}
+		NotificationCenter.default.post(name: Notification.Name("Feather.installApp"), object: nil)
 	}
 
 	static let instagramBeeApp = RoomStoreApp(
@@ -394,11 +640,9 @@ struct RoomTodayView: View {
 		ScrollView(showsIndicators: false) {
 			VStack(alignment: .leading, spacing: 24) {
 				HStack {
-					VStack(alignment: .leading, spacing: 2) {
-						Text("اليوم")
-							.font(.system(size: 34, weight: .bold))
-							.foregroundStyle(.white)
-					}
+					Text("اليوم")
+						.font(.system(size: 34, weight: .bold))
+						.foregroundStyle(.white)
 					Spacer()
 					Button {
 						showSettings = true
@@ -1060,7 +1304,7 @@ struct RoomSearchView: View {
 	}
 }
 
-// MARK: - 6. صفحة تفاصيل التطبيق + التوقيع والتثبيت المباشر في نفس الواجهة
+// MARK: - 6. صفحة تفاصيل التطبيق + التوقيع الصامت والتثبيت الفوري
 struct RoomAppDetailView: View {
 	let app: RoomStoreApp
 	@ObservedObject var viewModel: RoomStoreViewModel
@@ -1069,22 +1313,44 @@ struct RoomAppDetailView: View {
 	@State private var selectedTab = 0
 	@State private var copiedBundle = false
 	@State private var showReportAlert = false
-	@State private var showSigningSheet = false
 	@State private var selectedSimilarApp: RoomStoreApp? = nil
+
+	@FetchRequest(
+		entity: CertificatePair.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)],
+		animation: .snappy
+	) private var certificates: FetchedResults<CertificatePair>
+
+	@FetchRequest(
+		entity: Signed.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \Signed.date, ascending: false)],
+		animation: .snappy
+	) private var signedApps: FetchedResults<Signed>
+
+	@FetchRequest(
+		entity: Imported.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \Imported.date, ascending: false)],
+		animation: .snappy
+	) private var importedApps: FetchedResults<Imported>
+
+	private var activeCertificate: CertificatePair? {
+		let storedCert = UserDefaults.standard.integer(forKey: "feather.selectedCert")
+		if certificates.indices.contains(storedCert) {
+			return certificates[storedCert]
+		}
+		return certificates.first
+	}
 
 	private var similarApps: [RoomStoreApp] {
 		Array(viewModel.allApps.filter { $0.id != app.id }.prefix(10))
 	}
 
-	private var isDownloadingThis: Bool {
-		viewModel.downloadingAppID == app.id
+	private var isThisAppActive: Bool {
+		viewModel.activeApp?.id == app.id && viewModel.installStage != .idle
 	}
 
-	private var libraryTab: TabEnum {
-		TabEnum.defaultTabs.first {
-			let k = "\($0) \($0.title)".lowercased()
-			return k.contains("التطبيقات") || k.contains("library") || k.contains("المكتبة")
-		} ?? .sources
+	private var percentInt: Int {
+		Int(min(max(viewModel.progressValue * 100, 0), 100))
 	}
 
 	var body: some View {
@@ -1306,10 +1572,11 @@ struct RoomAppDetailView: View {
 					}
 					.padding(.horizontal)
 				}
-				.padding(.bottom, 105)
+				.padding(.bottom, isThisAppActive ? 165 : 105)
 			}
 			.ignoresSafeArea(edges: .top)
 
+			// أزرار التنقل العلوية
 			VStack {
 				HStack {
 					Button { dismiss() } label: {
@@ -1341,79 +1608,174 @@ struct RoomAppDetailView: View {
 				Spacer()
 			}
 
-			// شريط التثبيت السفلي الثابت
-			HStack(spacing: 10) {
-				Button {
-					viewModel.startInstall(app)
-				} label: {
-					HStack(spacing: 8) {
-						if isDownloadingThis {
-							ProgressView().tint(.white)
-							Text("جاري تحميل الـ IPA للتوقيع...")
-								.font(.headline)
-						} else {
-							Image(systemName: "arrow.down.to.line")
-								.font(.headline)
-							Text("تثبيت • \(app.size)")
-								.font(.headline)
+			// المنطقة السفلية: بطاقة التقدم العائمة + شريط الأزرار
+			VStack(spacing: 10) {
+				if isThisAppActive {
+					HStack(spacing: 12) {
+						RoomAppIconView(urlString: app.iconURL, size: 42, radius: 11)
+
+						VStack(alignment: .leading, spacing: 5) {
+							Text(app.name)
+								.font(.subheadline.bold())
+								.foregroundStyle(.white)
+								.lineLimit(1)
+
+							if viewModel.installStage == .readyToInstall {
+								HStack(spacing: 4) {
+									Text("تم التوقيع")
+										.foregroundStyle(.green)
+									Image(systemName: "checkmark")
+										.font(.caption2.bold())
+										.foregroundStyle(.green)
+									Text("• جارِ التثبيت على الآيفون")
+										.foregroundStyle(.gray)
+								}
+								.font(.caption)
+								.lineLimit(1)
+							} else {
+								Text("جارِ التوقيع \(percentInt)%")
+									.font(.caption)
+									.foregroundStyle(.gray)
+							}
+
+							GeometryReader { geo in
+								ZStack(alignment: .leading) {
+									Capsule()
+										.fill(Color.white.opacity(0.14))
+										.frame(height: 3.5)
+									Capsule()
+										.fill(viewModel.installStage == .readyToInstall ? Color.green : Color.blue)
+										.frame(width: max(8, geo.size.width * viewModel.progressValue), height: 3.5)
+										.animation(.easeOut(duration: 0.25), value: viewModel.progressValue)
+								}
+							}
+							.frame(height: 4)
+						}
+
+						Spacer()
+
+						Button {
+							viewModel.cancelSilentInstall()
+						} label: {
+							Circle()
+								.fill(Color.white.opacity(0.12))
+								.frame(width: 28, height: 28)
+								.overlay(
+									Image(systemName: "xmark")
+										.font(.caption2.bold())
+										.foregroundStyle(.white.opacity(0.8))
+								)
 						}
 					}
-					.foregroundStyle(.white)
-					.frame(maxWidth: .infinity)
-					.frame(height: 50)
-					.background(app.downloadURL.isEmpty ? Color.gray : Color.blue)
-					.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-				}
-				.disabled(app.downloadURL.isEmpty || isDownloadingThis)
-
-				Button {
-					UIPasteboard.general.string = app.downloadURL
-				} label: {
-					RoundedRectangle(cornerRadius: 14, style: .continuous)
-						.fill(Color(white: 0.14))
-						.frame(width: 50, height: 50)
-						.overlay(Image(systemName: "square.on.square").foregroundStyle(.white))
+					.padding(.horizontal, 14)
+					.padding(.vertical, 10)
+					.background(Color(white: 0.13))
+					.overlay(
+						RoundedRectangle(cornerRadius: 18, style: .continuous)
+							.stroke(Color.white.opacity(0.08), lineWidth: 1)
+					)
+					.clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+					.padding(.horizontal)
+					.transition(.move(edge: .bottom).combined(with: .opacity))
 				}
 
-				Button {
-					viewModel.toggleFavorite(app)
-				} label: {
-					let isFav = viewModel.favoriteIDs.contains(app.id)
-					RoundedRectangle(cornerRadius: 14, style: .continuous)
-						.fill(Color(white: 0.14))
-						.frame(width: 50, height: 50)
-						.overlay(
-							Image(systemName: isFav ? "heart.fill" : "heart")
-								.foregroundStyle(isFav ? .pink : .pink.opacity(0.8))
+				HStack(spacing: 10) {
+					Button {
+						if isThisAppActive && viewModel.installStage == .readyToInstall {
+							viewModel.triggerInstallPromptAgain(signedApps: signedApps)
+						} else if !isThisAppActive {
+							viewModel.startSilentSignAndInstall(
+								app: app,
+								certificate: activeCertificate,
+								importedApps: importedApps,
+								signedApps: signedApps
+							)
+						}
+					} label: {
+						ZStack(alignment: .leading) {
+							if isThisAppActive && viewModel.installStage == .signing {
+								GeometryReader { geo in
+									Color.blue.opacity(0.32)
+										.frame(width: geo.size.width * viewModel.progressValue)
+										.animation(.easeOut(duration: 0.25), value: viewModel.progressValue)
+								}
+							}
+
+							HStack(spacing: 8) {
+								if isThisAppActive && viewModel.installStage == .signing {
+									Text("جارِ التوقيع \(percentInt)%")
+										.font(.headline)
+								} else if isThisAppActive && viewModel.installStage == .readyToInstall {
+									Image(systemName: "checkmark.circle.fill")
+										.font(.headline)
+									Text("وافق على التثبيت")
+										.font(.headline)
+								} else {
+									Image(systemName: "arrow.down.to.line")
+										.font(.headline)
+									Text("تثبيت • \(app.size)")
+										.font(.headline)
+								}
+							}
+							.foregroundStyle(.white)
+							.frame(maxWidth: .infinity, maxHeight: .infinity)
+						}
+						.frame(maxWidth: .infinity)
+						.frame(height: 50)
+						.background(
+							app.downloadURL.isEmpty
+								? Color.gray
+								: (isThisAppActive && viewModel.installStage == .signing ? Color(white: 0.16) : Color.blue)
 						)
+						.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+					}
+					.disabled(app.downloadURL.isEmpty || (isThisAppActive && viewModel.installStage == .signing))
+
+					Button {
+						UIPasteboard.general.string = app.downloadURL
+					} label: {
+						RoundedRectangle(cornerRadius: 14, style: .continuous)
+							.fill(Color(white: 0.14))
+							.frame(width: 50, height: 50)
+							.overlay(Image(systemName: "square.on.square").foregroundStyle(.white))
+					}
+
+					Button {
+						viewModel.toggleFavorite(app)
+					} label: {
+						let isFav = viewModel.favoriteIDs.contains(app.id)
+						RoundedRectangle(cornerRadius: 14, style: .continuous)
+							.fill(Color(white: 0.14))
+							.frame(width: 50, height: 50)
+							.overlay(
+								Image(systemName: isFav ? "heart.fill" : "heart")
+									.foregroundStyle(isFav ? .pink : .pink.opacity(0.8))
+							)
+					}
 				}
+				.padding(.horizontal)
 			}
-			.padding(.horizontal)
 			.padding(.vertical, 10)
-			.background(Color.black.opacity(0.92))
+			.background(Color.black.opacity(0.94))
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.onChange(of: viewModel.readyToSignAppID) { completedID in
-			if completedID == app.id {
-				viewModel.readyToSignAppID = nil
-				showSigningSheet = true
-			}
-		}
-		.sheet(isPresented: $showSigningSheet) {
-			NavigationStack {
-				TabEnum.view(for: libraryTab)
-					.toolbar {
-						ToolbarItem(placement: .topBarLeading) {
-							Button("إغلاق") {
-								showSigningSheet = false
-							}
-						}
-					}
-			}
-			.environment(\.layoutDirection, .rightToLeft)
+		.sheet(item: $viewModel.signedInstallSheetApp) { signedItem in
+			InstallPreviewView(app: signedItem.base, isSharing: false)
+				.presentationDetents([.height(200)])
+				.presentationDragIndicator(.visible)
 		}
 		.sheet(item: $selectedSimilarApp) { nextApp in
 			RoomAppDetailView(app: nextApp, viewModel: viewModel)
+		}
+		.alert("تنبيه التثبيت", isPresented: Binding(
+			get: { viewModel.errorMessage != nil },
+			set: { if !$0 { viewModel.errorMessage = nil } }
+		)) {
+			Button("حسناً", role: .cancel) {
+				viewModel.errorMessage = nil
+			}
+		} message: {
+			Text(viewModel.errorMessage ?? "")
 		}
 		.alert("الإبلاغ عن مشكلة", isPresented: $showReportAlert) {
 			Button("حسناً", role: .cancel) { }
