@@ -10,9 +10,9 @@ import UIKit
 import AltSourceKit
 
 struct SourceAppsDetailView: View {
+	var sourceURL: URL? = nil
 	var source: ASRepository
 	var app: ASRepository.App
-	var sourceURL: URL? = nil
 
 	@Environment(\.dismiss) private var dismiss
 	@ObservedObject private var downloadManager = DownloadManager.shared
@@ -356,7 +356,7 @@ struct SourceAppsDetailView: View {
 			HStack(spacing: 10) {
 				Button {
 					if let url = appDownloadURL, !isDownloading {
-						downloadManager.startDownload(from: url, id: app.currentUniqueId)
+						_ = downloadManager.startDownload(from: url, id: app.currentUniqueId)
 					}
 				} label: {
 					HStack(spacing: 8) {
@@ -413,7 +413,7 @@ struct SourceAppsDetailView: View {
 		.navigationBarBackButtonHidden(true)
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedSimilarApp) { nextApp in
-			SourceAppsDetailView(source: source, app: nextApp, sourceURL: sourceURL)
+			SourceAppsDetailView(sourceURL: sourceURL, source: source, app: nextApp)
 		}
 		.alert("الإبلاغ عن مشكلة", isPresented: $showReportAlert) {
 			Button("حسناً", role: .cancel) { }
