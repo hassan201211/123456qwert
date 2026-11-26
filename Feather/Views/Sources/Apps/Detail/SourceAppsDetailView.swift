@@ -1,264 +1,569 @@
-//
-//  SourceAppsDetailView.swift
-//  Feather
-//
-//  Created by samsam on 7/25/25.
-//  Redesigned to Apple App Store Style
-//
+// MARK: - Room Store Models & Detail View
 
-import SwiftUI
-import Combine
-import AltSourceKit
-import NimbleViews
-import NukeUI
+struct RoomStoreApp: Identifiable, Codable, Hashable {
+    let id: String
+    let name: String
+    let subtitle: String
+    let description: String?
+    let category: String
+    let featured: Bool?
+    let featuredTitle: String?
+    let featuredSubtitle: String?
+    let version: String
+    let size: String
+    let minIOS: String?
+    let updatedAt: String?
+    let downloads: String?
+    let languages: String?
+    let bundleId: String?
+    let iconURL: String
+    let bannerURL: String?
+    let downloadURL: String
 
-// MARK: - SourceAppsDetailView
-struct SourceAppsDetailView: View {
-    @ObservedObject var downloadManager = DownloadManager.shared
-    @State private var _downloadProgress: Double = 0
-    @State var cancellable: AnyCancellable?
-    @State private var _isScreenshotPreviewPresented: Bool = false
-    @State private var _selectedScreenshotIndex: Int = 0
-    
-    var currentDownload: Download? {
-        downloadManager.getDownload(by: app.currentUniqueId)
+    var safeDescription: String {
+        description ?? "نسخة معدلة ومحدثة جاهزة للتثبيت المباشر على جهازك بدون قيود."
     }
-    
-    let sourceURL: URL?
-    let source: ASRepository
-    let app: ASRepository.App
-    
+    var safeMinIOS: String { minIOS ?? "iOS 15.0+" }
+    var safeUpdatedAt: String { updatedAt ?? "حديثاً" }
+    var safeDownloads: String { downloads ?? "120" }
+    var safeLanguages: String { languages ?? "العربية" }
+    var safeBundleId: String { bundleId ?? "com.room.\(id)" }
+}
+
+struct RoomStoreRepo: Codable {
+    let name: String
+    let apps: [RoomStoreApp]
+}
+
+@MainActor
+class RoomStoreViewModel: ObservableObject {
+    @Published var allApps: [RoomStoreApp] = []
+    @Published var favoriteIDs: Set<String> = []
+    @Published var downloadingAppID: String? = nil
+    @Published var downloadProgress: Double = 0.0
+    @Published var isLoading = false
+
+    // ضع رابط Raw لملف apps.json الخاص بك على GitHub هنا
+    private let defaultRepoURL = "https://raw.githubusercontent.com/USERNAME/REPO/main/apps.json"
+
+    var todayFeatured: [RoomStoreApp] {
+        let list = allApps.filter { $0.featured == true }
+        return list.isEmpty ? Array(allApps.prefix(3)) : list
+    }
+
+    var gamesList: [RoomStoreApp] {
+        allApps.filter { $0.category == "games" }
+    }
+
+    var appsList: [RoomStoreApp] {
+        allApps.filter { $0.category == "apps" }
+    }
+
+    var deviceCompatibilityText: String {
+        let sys = UIDevice.current.systemVersion
+        let model = UIDevice.current.model
+        return "متوافق مع الجهاز • \(model) • iOS \(sys)"
+    }
+
+    func fetchApps() async {
+        if allApps.isEmpty {
+            allApps = Self.fallbackApps
+        }
+        guard let url = URL(string: defaultRepoURL) else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let repo = try JSONDecoder().decode(RoomStoreRepo.self, from: data)
+            if !repo.apps.isEmpty {
+                self.allApps = repo.apps
+            }
+        } catch {
+            print("Room Repo Error: \(error)")
+        }
+    }
+
+    func toggleFavorite(_ app: RoomStoreApp) {
+        if favoriteIDs.contains(app.id) {
+            favoriteIDs.remove(app.id)
+        } else {
+            favoriteIDs.insert(app.id)
+        }
+    }
+
+    func downloadAndImport(_ app: RoomStoreApp, onComplete: ((URL) -> Void)? = nil) {
+        guard let url = URL(string: app.downloadURL), downloadingAppID == nil else { return }
+        downloadingAppID = app.id
+        downloadProgress = 0.2
+
+        Task {
+            do {
+                let (tempURL, _) = try await URLSession.shared.download(from: url)
+                self.downloadProgress = 0.85
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let destURL = docs.appendingPathComponent("\(app.id).ipa")
+                if FileManager.default.fileExists(atPath: destURL.path) {
+                    try FileManager.default.removeItem(at: destURL)
+                }
+                try FileManager.default.moveItem(at: tempURL, to: destURL)
+                self.downloadProgress = 1.0
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.downloadingAppID = nil
+                onComplete?(destURL)
+            } catch {
+                self.downloadingAppID = nil
+            }
+        }
+    }
+
+    static let fallbackApps: [RoomStoreApp] = [
+        RoomStoreApp(
+            id: "gta-v",
+            name: "GTA V",
+            subtitle: "العاب معدلة",
+            description: "نسخة خاصة من GTA V من تطويرنا - تدعم اللغة العربية - تدعم تحميل ملف اللعبة مباشر (21 جيجا تحميل داخلي) - تدعم قائمة الغش.",
+            category: "games",
+            featured: true,
+            featuredTitle: "GTA V للأيفون",
+            featuredSubtitle: "نسخة معدلة تدعم العربية وقائمة الغش",
+            version: "1.0",
+            size: "100.32 MB",
+            minIOS: "iOS 16.3+",
+            updatedAt: "قبل 3 أيام",
+            downloads: "28",
+            languages: "العربية",
+            bundleId: "com.macport.gtav",
+            iconURL: "",
+            bannerURL: nil,
+            downloadURL: ""
+        ),
+        RoomStoreApp(
+            id: "instagram-bee",
+            name: "إنستغرام النحلة",
+            subtitle: "تطبيقات التواصل",
+            description: "اصدار جديد للنحلة دخلت في اعماق انستكرام وغيرت الكثير مع ميزات تحميل الوسائط والتخفي الكاملة.",
+            category: "apps",
+            featured: true,
+            featuredTitle: "اصدار جديد للنحلة",
+            featuredSubtitle: "انها دخلت في اعماق انستكرام وغيرت الكثير",
+            version: "350.0",
+            size: "145.0 MB",
+            minIOS: "iOS 15.0+",
+            updatedAt: "اليوم",
+            downloads: "94",
+            languages: "العربية",
+            bundleId: "com.burbn.instagram",
+            iconURL: "",
+            bannerURL: nil,
+            downloadURL: ""
+        )
+    ]
+}
+
+struct RoomAppDetailView: View {
+    let app: RoomStoreApp
+    @ObservedObject var viewModel: RoomStoreViewModel
+    var onInstallIPA: ((URL) -> Void)? = nil
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab = 0
+    @State private var copiedBundle = false
+    @State private var showReportAlert = false
+    @State private var selectedSimilarApp: RoomStoreApp? = nil
+
+    private var similarApps: [RoomStoreApp] {
+        viewModel.allApps.filter { $0.id != app.id }
+    }
+
+    private var isDownloadingThis: Bool {
+        viewModel.downloadingAppID == app.id
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                
-                // 1. الهيدر (الأيقونة، الاسم، المطور، زر التثبيت)
-                HStack(alignment: .top, spacing: 16) {
-                    if let iconURL = app.iconURL {
-                        LazyImage(url: iconURL) { state in
-                            if let image = state.image {
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 118, height: 118)
-                                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                            .stroke(Color.black.opacity(0.1), lineWidth: 1)
-                                    )
-                            } else {
-                                standardIcon
-                            }
+        ZStack(alignment: .bottom) {
+            Color.black.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 18) {
+                    ZStack(alignment: .bottom) {
+                        AsyncImage(url: URL(string: app.bannerURL ?? app.iconURL)) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            LinearGradient(
+                                colors: [Color(white: 0.16), Color.black],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         }
-                    } else {
-                        standardIcon
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(app.currentName)
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(.primary)
-                            .lineLimit(2)
-                        
-                        Text(app.developer ?? source.name ?? "المطور")
-                            .font(.system(size: 15))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                        
-                        Spacer()
-                        
-                        // زر التحميل الأزرق
-                        DownloadButtonView(sourceURL: sourceURL, source: source, app: app)
-                            .font(.system(size: 15, weight: .bold))
-                            .frame(height: 30)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.top, 4)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                
-                // 2. شريط الإحصائيات (التقييم، العمر، الحجم)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 30) {
-                        _statItem(top: "4.8", middle: "★★★★★", bottom: "11 ألف تقييم")
-                        Divider().frame(height: 40)
-                        _statItem(top: "التصنيف العمري", middle: "12+", bottom: "سنة")
-                        Divider().frame(height: 40)
-                        _statItem(top: "الفئة", middle: app.category ?? "أدوات", bottom: "تطبيقات")
-                        Divider().frame(height: 40)
-                        _statItem(top: "الحجم", middle: app.size?.formattedByteCount ?? "N/A", bottom: "ميجابايت")
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-                }
-                
-                Divider().padding(.leading, 20)
-                
-                // 3. قسم الصور (Screenshots)
-                if let screenshotURLs = app.screenshotURLs {
-                    VStack(alignment: .leading) {
-                        _screenshots(screenshotURLs: screenshotURLs)
-                    }
-                    .padding(.vertical, 16)
-                    
-                    Divider().padding(.leading, 20)
-                }
-                
-                // 4. قسم "ما الجديد"
-                if let currentVer = app.currentVersion,
-                   let whatsNewDesc = app.currentAppVersion?.localizedDescription {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("ما الجديد")
-                                .font(.title3.bold())
-                            Spacer()
-                            NavigationLink(destination: VersionHistoryView(sourceURL: sourceURL, source: source, app: app, versions: app.versions ?? [])) {
-                                Text("سجل الإصدارات")
-                                    .font(.subheadline)
-                                    .foregroundColor(.blue)
-                            }
-                        }
-                        
-                        HStack {
-                            Text("الإصدار \(currentVer)")
+                        .frame(height: 210)
+                        .frame(maxWidth: .infinity)
+                        .blur(radius: 18)
+                        .opacity(0.45)
+                        .overlay(
+                            LinearGradient(
+                                colors: [.clear, .black.opacity(0.85), .black],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .clipped()
+
+                        VStack(spacing: 10) {
+                            RoomAppIconView(urlString: app.iconURL, size: 88, radius: 20)
+                                .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
+
+                            Text(app.name)
+                                .font(.system(size: 28, weight: .bold))
+                                .foregroundStyle(.white)
+
+                            Text(app.subtitle)
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            if let date = app.currentDate?.date {
-                                Text(DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .none))
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
+                                .foregroundStyle(.gray)
+
+                            HStack(spacing: 8) {
+                                Text("v\(app.version)")
+                                Text("•")
+                                Text("\(app.safeDownloads) تحميل")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.gray)
+                        }
+                        .padding(.bottom, 6)
+                    }
+
+                    VStack(alignment: .leading, spacing: 18) {
+                        // التبديل بين نظرة عامة والتقييمات
+                        HStack(spacing: 0) {
+                            RoomPillButton(title: "نظرة عامة", isSelected: selectedTab == 0) {
+                                withAnimation(.easeInOut(duration: 0.2)) { selectedTab = 0 }
+                            }
+                            RoomPillButton(title: "التقييمات", isSelected: selectedTab == 1) {
+                                withAnimation(.easeInOut(duration: 0.2)) { selectedTab = 1 }
                             }
                         }
-                        
-                        Text(whatsNewDesc)
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
-                            .lineLimit(4)
+                        .padding(4)
+                        .background(Color(white: 0.11))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                        // شريط التوافق الأخضر
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.shield")
+                                .font(.subheadline.bold())
+                            Text(viewModel.deviceCompatibilityText)
+                                .font(.caption.bold())
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .foregroundStyle(Color(red: 0.25, green: 0.85, blue: 0.45))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(Color.green.opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        if selectedTab == 0 {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("عن التطبيق")
+                                    .font(.title3.bold())
+                                    .foregroundStyle(.white)
+
+                                Text(app.safeDescription)
+                                    .font(.subheadline)
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                                    .lineSpacing(5)
+                            }
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("المواصفات")
+                                    .font(.title3.bold())
+                                    .foregroundStyle(.white)
+
+                                VStack(spacing: 0) {
+                                    HStack(spacing: 0) {
+                                        RoomSpecCell(title: "الإصدار", value: app.version)
+                                        Divider().background(Color.white.opacity(0.1))
+                                        RoomSpecCell(title: "الحجم", value: app.size)
+                                        Divider().background(Color.white.opacity(0.1))
+                                        RoomSpecCell(title: "يتطلب", value: app.safeMinIOS)
+                                    }
+                                    Divider().background(Color.white.opacity(0.1))
+                                    HStack(spacing: 0) {
+                                        RoomSpecCell(title: "التحديث", value: app.safeUpdatedAt)
+                                        Divider().background(Color.white.opacity(0.1))
+                                        RoomSpecCell(title: "التحميلات", value: app.safeDownloads)
+                                        Divider().background(Color.white.opacity(0.1))
+                                        RoomSpecCell(title: "اللغات", value: app.safeLanguages)
+                                    }
+                                }
+                                .background(Color(white: 0.11))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+
+                            HStack(spacing: 12) {
+                                Text("المعرف")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.gray)
+
+                                Spacer()
+
+                                Text(app.safeBundleId)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+
+                                Button {
+                                    UIPasteboard.general.string = app.safeBundleId
+                                    withAnimation { copiedBundle = true }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                        withAnimation { copiedBundle = false }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: copiedBundle ? "checkmark" : "doc.on.doc")
+                                        Text(copiedBundle ? "تم" : "نسخ")
+                                    }
+                                    .font(.caption.bold())
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.blue.opacity(0.22))
+                                    .foregroundStyle(.blue)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color(white: 0.11))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                            if !similarApps.isEmpty {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("تطبيقات مشابهة")
+                                        .font(.title3.bold())
+                                        .foregroundStyle(.white)
+
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 14) {
+                                            ForEach(similarApps) { item in
+                                                Button {
+                                                    selectedSimilarApp = item
+                                                } label: {
+                                                    VStack(spacing: 6) {
+                                                        RoomAppIconView(urlString: item.iconURL, size: 64, radius: 15)
+                                                        Text(item.name)
+                                                            .font(.caption2)
+                                                            .foregroundStyle(.white)
+                                                            .lineLimit(1)
+                                                            .frame(width: 68)
+                                                    }
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Button {
+                                showReportAlert = true
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "flag")
+                                        .foregroundStyle(.orange)
+                                    Text("الإبلاغ عن مشكلة")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.orange)
+                                    Spacer()
+                                    Image(systemName: "chevron.left")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.gray)
+                                }
+                                .padding(14)
+                                .background(Color(white: 0.11))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                        } else {
+                            VStack(spacing: 12) {
+                                Image(systemName: "star.leadinghalf.filled")
+                                    .font(.largeTitle)
+                                    .foregroundStyle(.yellow)
+                                Text("4.9 من 5")
+                                    .font(.title2.bold())
+                                    .foregroundStyle(.white)
+                                Text("تقييم المستخدمين لهذه النسخة المعدلة")
+                                    .font(.caption)
+                                    .foregroundStyle(.gray)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                            .background(Color(white: 0.11))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
                     }
-                    .padding(20)
-                    
-                    Divider().padding(.leading, 20)
+                    .padding(.horizontal)
                 }
-                
-                // 5. قسم الوصف
-                if let appDesc = app.localizedDescription {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("الوصف")
-                            .font(.title3.bold())
-                        ExpandableText(text: appDesc, lineLimit: 4)
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
+                .padding(.bottom, 105)
+            }
+            .ignoresSafeArea(edges: .top)
+
+            // أزرار التنقل العلوية
+            VStack {
+                HStack {
+                    Button { dismiss() } label: {
+                        Circle()
+                            .fill(Color.black.opacity(0.6))
+                            .frame(width: 36, height: 36)
+                            .overlay(
+                                Image(systemName: "chevron.right")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(.white)
+                            )
                     }
-                    .padding(20)
-                    
-                    Divider().padding(.leading, 20)
-                }
-                
-                // 6. قسم المعلومات
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("المعلومات")
-                        .font(.title3.bold())
-                    
-                    VStack(spacing: 12) {
-                        if let developer = app.developer { _infoRow(title: "المطور", value: developer) }
-                        if let size = app.size { _infoRow(title: "الحجم", value: size.formattedByteCount) }
-                        if let category = app.category { _infoRow(title: "الفئة", value: category.capitalized) }
-                        if let version = app.currentVersion { _infoRow(title: "الإصدار", value: version) }
-                        if let bundleId = app.id { _infoRow(title: "المُعرِّف", value: bundleId) }
+                    Spacer()
+                    if let shareURL = URL(string: app.downloadURL) {
+                        ShareLink(item: shareURL) {
+                            Circle()
+                                .fill(Color.black.opacity(0.6))
+                                .frame(width: 36, height: 36)
+                                .overlay(
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white)
+                                )
+                        }
                     }
                 }
-                .padding(20)
+                .padding(.horizontal)
+                .padding(.top, 8)
+                Spacer()
             }
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            NBToolbarButton(systemImage: "square.and.arrow.up", placement: .topBarTrailing) {
-                let sharedString = "\(app.currentName)\n\(app.currentDescription ?? "")\n\(source.website?.absoluteString ?? "")"
-                UIActivityViewController.show(activityItems: [sharedString])
+
+            // شريط التثبيت السفلي الثابت
+            HStack(spacing: 10) {
+                Button {
+                    viewModel.downloadAndImport(app) { localURL in
+                        onInstallIPA?(localURL)
+                        dismiss()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isDownloadingThis {
+                            ProgressView().tint(.white)
+                            Text("جاري التنزيل \(Int(viewModel.downloadProgress * 100))%")
+                                .font(.headline)
+                        } else {
+                            Image(systemName: "arrow.down.to.line")
+                                .font(.headline)
+                            Text("تثبيت • \(app.size)")
+                                .font(.headline)
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(Color.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .disabled(isDownloadingThis)
+
+                Button {
+                    UIPasteboard.general.string = app.downloadURL
+                } label: {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(white: 0.14))
+                        .frame(width: 50, height: 50)
+                        .overlay(Image(systemName: "square.on.square").foregroundStyle(.white))
+                }
+
+                Button {
+                    viewModel.toggleFavorite(app)
+                } label: {
+                    let isFav = viewModel.favoriteIDs.contains(app.id)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(white: 0.14))
+                        .frame(width: 50, height: 50)
+                        .overlay(
+                            Image(systemName: isFav ? "heart.fill" : "heart")
+                                .foregroundStyle(isFav ? .pink : .pink.opacity(0.8))
+                        )
+                }
             }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .background(Color.black.opacity(0.92))
         }
-        .fullScreenCover(isPresented: $_isScreenshotPreviewPresented) {
-            if let screenshotURLs = app.screenshotURLs {
-                ScreenshotPreviewView(screenshotURLs: screenshotURLs, initialIndex: _selectedScreenshotIndex)
-            }
+        .environment(\.layoutDirection, .rightToLeft)
+        .sheet(item: $selectedSimilarApp) { nextApp in
+            RoomAppDetailView(app: nextApp, viewModel: viewModel, onInstallIPA: onInstallIPA)
         }
-    }
-    
-    var standardIcon: some View {
-        Image("App_Unknown")
-            .resizable()
-            .frame(width: 118, height: 118)
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .alert("الإبلاغ عن مشكلة", isPresented: $showReportAlert) {
+            Button("حسناً", role: .cancel) { }
+        } message: {
+            Text("تم إرسال بلاغك بخصوص \(app.name) وسيتم فحص الرابط قريباً.")
+        }
     }
 }
 
-// MARK: - App Store Style Components
-extension SourceAppsDetailView {
-    
-    @ViewBuilder
-    private func _statItem(top: String, middle: String, bottom: String) -> some View {
-        VStack(spacing: 4) {
-            Text(top)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fontWeight(.medium)
-            Text(middle)
-                .font(.headline)
-                .foregroundColor(.gray)
-                .fontWeight(.bold)
-            Text(bottom)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .frame(minWidth: 70)
-    }
-    
-    @ViewBuilder
-    private func _infoRow(title: String, value: String) -> some View {
-        HStack {
+private struct RoomPillButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
             Text(title)
-                .foregroundColor(.secondary)
-            Spacer()
-            Text(value)
-                .foregroundColor(.primary)
-                .multilineTextAlignment(.trailing)
+                .font(.subheadline.bold())
+                .foregroundStyle(isSelected ? .white : .gray)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background(isSelected ? Color(white: 0.22) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .font(.subheadline)
-        Divider()
     }
-    
-    @ViewBuilder
-    private func _screenshots(screenshotURLs: [URL]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
-                ForEach(screenshotURLs.indices, id: \.self) { index in
-                    let url = screenshotURLs[index]
-                    LazyImage(url: url) { state in
-                        if let image = state.image {
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(height: 260)
-                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                        .strokeBorder(Color.black.opacity(0.1), lineWidth: 1)
-                                }
-                                .onTapGesture {
-                                    _selectedScreenshotIndex = index
-                                    _isScreenshotPreviewPresented = true
-                                }
-                        } else {
-                            RoundedRectangle(cornerRadius: 20)
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(width: 146, height: 260)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
+}
+
+private struct RoomSpecCell: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.gray)
+            Text(value)
+                .font(.system(.subheadline, design: .monospaced).bold())
+                .foregroundStyle(.white)
+                .lineLimit(1)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+    }
+}
+
+struct RoomAppIconView: View {
+    let urlString: String
+    let size: CGFloat
+    let radius: CGFloat
+
+    var body: some View {
+        AsyncImage(url: URL(string: urlString)) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: 0.22), Color(white: 0.12)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    Image(systemName: "app.fill")
+                        .font(.system(size: size * 0.42))
+                        .foregroundStyle(.white.opacity(0.85))
+                )
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 }
