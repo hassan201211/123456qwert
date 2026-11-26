@@ -34,10 +34,66 @@ struct TabbarView: View {
 			RoomTodayView(viewModel: roomStoreVM)
 		} else if key.contains("الألعاب") || key.contains("العاب") || key.contains("game") {
 			RoomGamesView(viewModel: roomStoreVM)
+		} else if key.contains("التطبيقات") || key.contains("library") {
+			RoomAppsView(viewModel: roomStoreVM)
+		} else if key.contains("المصادر") || key.contains("source") {
+			RoomSourcesAndLibraryView(sourcesTab: tab)
 		} else if key.contains("البحث") || key.contains("بحث") || key.contains("search") {
 			RoomSearchView(viewModel: roomStoreVM)
 		} else {
 			TabEnum.view(for: tab)
+		}
+	}
+}
+
+// MARK: - 0. دمج المصادر + استيراد وتوقيع ملفات IPA
+struct RoomSourcesAndLibraryView: View {
+	let sourcesTab: TabEnum
+	@State private var selectedSection = 0 // 0 = المصادر, 1 = المكتبة و IPA
+	@State private var showSettings = false
+
+	private var libraryTab: TabEnum {
+		TabEnum.defaultTabs.first {
+			let k = "\($0) \($0.title)".lowercased()
+			return k.contains("التطبيقات") || k.contains("library") || k.contains("المكتبة")
+		} ?? sourcesTab
+	}
+
+	var body: some View {
+		VStack(spacing: 0) {
+			// شريط تبديل علوي يدمج المصادر مع مكتبة ملفات IPA
+			HStack(spacing: 10) {
+				Picker("", selection: $selectedSection) {
+					Text("المصادر").tag(0)
+					Text("المكتبة (IPA)").tag(1)
+				}
+				.pickerStyle(.segmented)
+
+				Button {
+					showSettings = true
+				} label: {
+					Image(systemName: "gearshape.fill")
+						.font(.subheadline)
+						.foregroundStyle(.white)
+						.frame(width: 32, height: 32)
+						.background(Color(white: 0.16))
+						.clipShape(Circle())
+				}
+			}
+			.padding(.horizontal)
+			.padding(.vertical, 8)
+			.background(Color.black)
+
+			if selectedSection == 0 {
+				TabEnum.view(for: sourcesTab)
+			} else {
+				TabEnum.view(for: libraryTab)
+			}
+		}
+		.background(Color.black.ignoresSafeArea())
+		.environment(\.layoutDirection, .rightToLeft)
+		.sheet(isPresented: $showSettings) {
+			TabEnum.view(for: .settings)
 		}
 	}
 }
@@ -48,7 +104,8 @@ struct RoomStoreApp: Identifiable, Codable, Hashable {
 	let name: String
 	let subtitle: String
 	let description: String?
-	let category: String
+	let category: String // "apps" أو "games"
+	let subCategory: String // "social", "media", "tools", "design", "games"
 	let featured: Bool?
 	let featuredTitle: String?
 	let featuredSubtitle: String?
@@ -74,6 +131,7 @@ struct RoomStoreApp: Identifiable, Codable, Hashable {
 		subtitle: String,
 		description: String? = nil,
 		category: String = "apps",
+		subCategory: String = "tools",
 		featured: Bool? = nil,
 		featuredTitle: String? = nil,
 		featuredSubtitle: String? = nil,
@@ -93,6 +151,7 @@ struct RoomStoreApp: Identifiable, Codable, Hashable {
 		self.subtitle = subtitle
 		self.description = description
 		self.category = category
+		self.subCategory = subCategory
 		self.featured = featured
 		self.featuredTitle = featuredTitle
 		self.featuredSubtitle = featuredSubtitle
@@ -144,9 +203,27 @@ struct RoomStoreApp: Identifiable, Codable, Hashable {
 		}
 
 		let appType = (try? c.decode(Int.self, forKey: .type)) ?? 1
-		let lowerName = resolvedName.lowercased()
-		let isGame = (appType == 2) || lowerName.contains("game") || lowerName.contains("piano") || lowerName.contains("gta") || lowerName.contains("minecraft")
+		let lower = "\(resolvedName) \(rawBundle)".lowercased()
+
+		let gameKeywords = ["game", "piano", "gta", "minecraft", "8ball", "pool", "sudoku", "wordscape", "guesser", "elevate", "chess", "roblox", "pubg", "simcity"]
+		let socialKeywords = ["insta", "tiktok", "musically", "snap", "telegram", "swiftgram", "locket", "purestatus", "wa.", "whatsapp", "unfold", "mojo", "inpreview", "social", "vibes"]
+		let mediaKeywords = ["photo", "camera", "video", "picsart", "inshot", "vsco", "lightroom", "lrmobile", "epik", "polish", "dazz", "proccd", "remini", "videoleap", "premiere", "kinemaster", "vlog", "lut", "infuse", "b612", "soda", "foodie", "peachy", "prequel", "bazaart", "facetune"]
+		let designKeywords = ["notability", "collanote", "goodnotes", "alight", "fresco", "sketch", "draw", "pixel", "color", "mockup", "animock", "scrl", "canva", "noteplan", "drafts"]
+
+		let isGame = (appType == 2) || gameKeywords.contains(where: { lower.contains($0) })
 		self.category = isGame ? "games" : "apps"
+
+		if isGame {
+			self.subCategory = "games"
+		} else if socialKeywords.contains(where: { lower.contains($0) }) {
+			self.subCategory = "social"
+		} else if mediaKeywords.contains(where: { lower.contains($0) }) {
+			self.subCategory = "media"
+		} else if designKeywords.contains(where: { lower.contains($0) }) {
+			self.subCategory = "design"
+		} else {
+			self.subCategory = "tools"
+		}
 
 		self.iconURL = (try? c.decode(String.self, forKey: .iconURL))
 			?? (try? c.decode(String.self, forKey: .icon))
@@ -196,14 +273,13 @@ class RoomStoreViewModel: ObservableObject {
 	@Published var allApps: [RoomStoreApp] = []
 	@Published var favoriteIDs: Set<String> = []
 	@Published var downloadingAppID: String? = nil
-	@Published var downloadProgress: Double = 0.0
 	@Published var isLoading = false
 
 	private let defaultRepoURL = "https://raw.githubusercontent.com/hassan201211/123456qwert/refs/heads/main/apps.json"
 
 	var todayFeatured: [RoomStoreApp] {
-		let list = allApps.filter { $0.featured == true }
-		return list.isEmpty ? Array(allApps.prefix(5)) : list
+		let socialOrMedia = allApps.filter { $0.subCategory == "social" || $0.subCategory == "media" }
+		return socialOrMedia.isEmpty ? Array(allApps.prefix(4)) : Array(socialOrMedia.prefix(4))
 	}
 
 	var gamesList: [RoomStoreApp] {
@@ -222,7 +298,7 @@ class RoomStoreViewModel: ObservableObject {
 
 	func fetchApps() async {
 		if allApps.isEmpty {
-			allApps = Self.fallbackApps
+			allApps = Self.featuredStarterApps
 		}
 		guard let url = URL(string: defaultRepoURL) else { return }
 		isLoading = true
@@ -233,6 +309,14 @@ class RoomStoreViewModel: ObservableObject {
 			let repo = try JSONDecoder().decode(RoomStoreRepo.self, from: data)
 			var seenBundles = Set<String>()
 			var uniqueApps: [RoomStoreApp] = []
+
+			// إضافة تطبيق إنستغرام المعدل في المقدمة إذا لم يكن موجوداً في المستودع
+			let hasInsta = repo.apps.contains { ($0.name.lowercased().contains("insta")) }
+			if !hasInsta {
+				uniqueApps.append(Self.instagramBeeApp)
+				seenBundles.insert("com.burbn.instagram")
+			}
+
 			for app in repo.apps {
 				let key = app.bundleId ?? app.name
 				if !seenBundles.contains(key) {
@@ -256,146 +340,331 @@ class RoomStoreViewModel: ObservableObject {
 		}
 	}
 
-	func downloadAndImport(_ app: RoomStoreApp, onComplete: ((URL) -> Void)? = nil) {
-		guard let url = URL(string: app.downloadURL), downloadingAppID == nil else { return }
+	func startInstall(_ app: RoomStoreApp) {
+		guard let url = URL(string: app.downloadURL), !app.downloadURL.isEmpty else { return }
 		downloadingAppID = app.id
-		downloadProgress = 0.2
-
-		Task {
-			do {
-				let (tempURL, _) = try await URLSession.shared.download(from: url)
-				self.downloadProgress = 0.85
-				let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-				let destURL = docs.appendingPathComponent("\(app.name)_\(app.version).ipa")
-				if FileManager.default.fileExists(atPath: destURL.path) {
-					try FileManager.default.removeItem(at: destURL)
-				}
-				try FileManager.default.moveItem(at: tempURL, to: destURL)
-				self.downloadProgress = 1.0
-				try? await Task.sleep(nanoseconds: 300_000_000)
-				self.downloadingAppID = nil
-				onComplete?(destURL)
-			} catch {
-				self.downloadingAppID = nil
-			}
+		_ = DownloadManager.shared.startDownload(from: url, id: app.id)
+		DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+			self.downloadingAppID = nil
 		}
 	}
 
-	static let fallbackApps: [RoomStoreApp] = [
-		RoomStoreApp(
-			id: "gta-v",
-			name: "GTA V",
-			subtitle: "العاب معدلة",
-			description: "نسخة خاصة من GTA V من تطويرنا - تدعم اللغة العربية - تدعم تحميل ملف اللعبة مباشر (21 جيجا تحميل داخلي) - تدعم قائمة الغش.",
-			category: "games",
-			featured: true,
-			featuredTitle: "GTA V للأيفون",
-			featuredSubtitle: "نسخة معدلة تدعم العربية وقائمة الغش",
-			version: "1.0",
-			size: "100.32 MB",
-			minIOS: "iOS 16.3+",
-			updatedAt: "قبل 3 أيام",
-			downloads: "28",
-			languages: "العربية",
-			bundleId: "com.macport.gtav",
-			iconURL: "",
-			bannerURL: nil,
-			downloadURL: ""
-		),
-		RoomStoreApp(
-			id: "instagram-bee",
-			name: "إنستغرام النحلة",
-			subtitle: "تطبيقات التواصل",
-			description: "اصدار جديد للنحلة دخلت في اعماق انستكرام وغيرت الكثير مع ميزات تحميل الوسائط والتخفي الكاملة.",
-			category: "apps",
-			featured: true,
-			featuredTitle: "اصدار جديد للنحلة",
-			featuredSubtitle: "انها دخلت في اعماق انستكرام وغيرت الكثير",
-			version: "350.0",
-			size: "145.0 MB",
-			minIOS: "iOS 15.0+",
-			updatedAt: "اليوم",
-			downloads: "94",
-			languages: "العربية",
-			bundleId: "com.burbn.instagram",
-			iconURL: "",
-			bannerURL: nil,
-			downloadURL: ""
-		)
-	]
+	static let instagramBeeApp = RoomStoreApp(
+		id: "instagram-bee-mod",
+		name: "إنستغرام النحلة",
+		subtitle: "تحميل الوسائط والقصص وإخفاء الظهور",
+		description: "إصدار معدل من إنستغرام يتيح تحميل الصور والفيديوهات والريلز والقصص بجودة عالية مع إخفاء حالة القراءة والظهور.",
+		category: "apps",
+		subCategory: "social",
+		featured: true,
+		featuredTitle: "إصدار جديد للنحلة",
+		featuredSubtitle: "انها دخلت في أعماق إنستغرام وغيرت الكثير",
+		version: "350.0",
+		size: "145.0 MB",
+		minIOS: "iOS 15.0+",
+		updatedAt: "حديثاً",
+		downloads: "4.8K",
+		languages: "العربية",
+		bundleId: "com.burbn.instagram",
+		iconURL: "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/4b/98/0d/4b980d65-6b3e-8d1e-24a7-22e6f9814d12/Prod-0-0-1x_U007emarketing-0-7-0-85-220.png/512x512bb.jpg",
+		bannerURL: nil,
+		downloadURL: ""
+	)
+
+	static let featuredStarterApps: [RoomStoreApp] = [instagramBeeApp]
 }
 
-// MARK: - 2. واجهة اليوم (Today)
+// MARK: - 2. واجهة اليوم (Today - بصور حقيقية + قسم الألعاب + قسم التطبيقات)
 struct RoomTodayView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var selectedApp: RoomStoreApp? = nil
+	@State private var showSettings = false
 
 	var body: some View {
 		ScrollView(showsIndicators: false) {
-			VStack(alignment: .leading, spacing: 22) {
+			VStack(alignment: .leading, spacing: 24) {
+				// 1. الترويسة + زر الإعدادات المفعّل
 				HStack {
-					Text("اليوم")
-						.font(.system(size: 34, weight: .bold))
-						.foregroundStyle(.white)
+					VStack(alignment: .leading, spacing: 2) {
+						Text("اليوم")
+							.font(.system(size: 34, weight: .bold))
+							.foregroundStyle(.white)
+					}
 					Spacer()
-					Circle()
-						.fill(Color.blue)
-						.frame(width: 34, height: 34)
-						.overlay(
-							Image(systemName: "star.fill")
-								.font(.subheadline)
-								.foregroundStyle(.white)
-						)
+					Button {
+						showSettings = true
+					} label: {
+						Circle()
+							.fill(Color.blue)
+							.frame(width: 36, height: 36)
+							.overlay(
+								Image(systemName: "gearshape.fill")
+									.font(.subheadline.bold())
+									.foregroundStyle(.white)
+							)
+					}
 				}
 				.padding(.horizontal)
 
-				ForEach(viewModel.todayFeatured) { app in
-					Button {
-						selectedApp = app
-					} label: {
-						ZStack(alignment: .bottomLeading) {
-							if let banner = app.bannerURL, let url = URL(string: banner), !banner.isEmpty {
-								AsyncImage(url: url) { image in
-									image.resizable().scaledToFill()
-								} placeholder: {
-									todayGradient
-								}
-							} else {
-								todayGradient
+				// 2. البطاقات المميزة الكبيرة بصور وأيقونات واضحة
+				ScrollView(.horizontal, showsIndicators: false) {
+					HStack(spacing: 16) {
+						ForEach(viewModel.todayFeatured) { app in
+							Button {
+								selectedApp = app
+							} label: {
+								TodayVisualCard(app: app)
 							}
-
-							LinearGradient(
-								colors: [.clear, .black.opacity(0.85)],
-								startPoint: .center,
-								endPoint: .bottom
-							)
-
-							VStack(alignment: .leading, spacing: 6) {
-								Text(app.featuredTitle ?? app.name)
-									.font(.title.bold())
-									.foregroundStyle(.white)
-								Text(app.featuredSubtitle ?? app.subtitle)
-									.font(.subheadline)
-									.foregroundStyle(.white.opacity(0.8))
-							}
-							.padding(20)
+							.buttonStyle(.plain)
 						}
-						.frame(height: 320)
-						.frame(maxWidth: .infinity)
-						.clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-						.padding(.horizontal)
 					}
-					.buttonStyle(.plain)
+					.padding(.horizontal)
 				}
 
-				if !viewModel.allApps.isEmpty {
+				// 3. قسم الألعاب أسفل البطاقة الرئيسية
+				if !viewModel.gamesList.isEmpty {
 					VStack(alignment: .leading, spacing: 14) {
-						Text("أبرز التطبيقات المعدلة")
+						HStack(spacing: 4) {
+							Text("أبرز الألعاب")
+								.font(.title2.bold())
+								.foregroundStyle(.white)
+							Image(systemName: "chevron.left")
+								.font(.headline.bold())
+								.foregroundStyle(.gray)
+						}
+						.padding(.horizontal)
+
+						VStack(spacing: 12) {
+							ForEach(viewModel.gamesList.prefix(4)) { game in
+								Button {
+									selectedApp = game
+								} label: {
+									RoomStoreAppRow(app: game)
+										.padding(.horizontal)
+								}
+								.buttonStyle(.plain)
+							}
+						}
+					}
+				}
+
+				// 4. قسم التطبيقات المعدلة أسفل الألعاب
+				if !viewModel.appsList.isEmpty {
+					VStack(alignment: .leading, spacing: 14) {
+						HStack(spacing: 4) {
+							Text("أبرز التطبيقات")
+								.font(.title2.bold())
+								.foregroundStyle(.white)
+							Image(systemName: "chevron.left")
+								.font(.headline.bold())
+								.foregroundStyle(.gray)
+						}
+						.padding(.horizontal)
+
+						VStack(spacing: 12) {
+							ForEach(viewModel.appsList.prefix(6)) { app in
+								Button {
+									selectedApp = app
+								} label: {
+									RoomStoreAppRow(app: app)
+										.padding(.horizontal)
+								}
+								.buttonStyle(.plain)
+							}
+						}
+					}
+				}
+			}
+			.padding(.top, 10)
+			.padding(.bottom, 95)
+		}
+		.background(Color.black.ignoresSafeArea())
+		.environment(\.layoutDirection, .rightToLeft)
+		.sheet(item: $selectedApp) { app in
+			RoomAppDetailView(app: app, viewModel: viewModel)
+		}
+		.sheet(isPresented: $showSettings) {
+			TabEnum.view(for: .settings)
+		}
+	}
+}
+
+struct TodayVisualCard: View {
+	let app: RoomStoreApp
+
+	var body: some View {
+		ZStack {
+			// خلفية متوهجة من صورة التطبيق نفسها
+			AsyncImage(url: URL(string: app.iconURL)) { image in
+				image
+					.resizable()
+					.scaledToFill()
+					.frame(width: 330, height: 320)
+					.blur(radius: 26)
+					.opacity(0.65)
+			} placeholder: {
+				LinearGradient(
+					colors: [Color(red: 0.06, green: 0.25, blue: 0.42), Color(red: 0.02, green: 0.08, blue: 0.16)],
+					startPoint: .topLeading,
+					endPoint: .bottomTrailing
+				)
+			}
+			.frame(width: 330, height: 320)
+			.clipped()
+
+			LinearGradient(
+				colors: [.black.opacity(0.15), .black.opacity(0.45), .black.opacity(0.92)],
+				startPoint: .top,
+				endPoint: .bottom
+			)
+
+			VStack(alignment: .leading, spacing: 12) {
+				HStack {
+					Text("تطبيق مميز")
+						.font(.caption.bold())
+						.padding(.horizontal, 10)
+						.padding(.vertical, 5)
+						.background(.ultraThinMaterial)
+						.foregroundStyle(.white)
+						.clipShape(Capsule())
+					Spacer()
+				}
+
+				Spacer()
+
+				// أيقونة التطبيق الحقيقية بحجم واضح
+				RoomAppIconView(urlString: app.iconURL, size: 76, radius: 18)
+					.shadow(color: .black.opacity(0.5), radius: 10, y: 5)
+
+				HStack(alignment: .bottom) {
+					VStack(alignment: .leading, spacing: 4) {
+						Text(app.featuredTitle ?? app.name)
+							.font(.title2.bold())
+							.foregroundStyle(.white)
+							.lineLimit(1)
+						Text(app.featuredSubtitle ?? app.subtitle)
+							.font(.caption)
+							.foregroundStyle(.white.opacity(0.8))
+							.lineLimit(2)
+					}
+
+					Spacer()
+
+					Text("حصول")
+						.font(.subheadline.bold())
+						.padding(.horizontal, 18)
+						.padding(.vertical, 7)
+						.background(Color.white.opacity(0.22))
+						.foregroundStyle(.white)
+						.clipShape(Capsule())
+				}
+			}
+			.padding(20)
+		}
+		.frame(width: 330, height: 320)
+		.clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+	}
+}
+
+// MARK: - 3. واجهة التطبيقات (Apps - مع شريط التصنيفات الأفقي)
+struct RoomAppsView: View {
+	@ObservedObject var viewModel: RoomStoreViewModel
+	@State private var selectedFilter = "all"
+	@State private var selectedApp: RoomStoreApp? = nil
+	@State private var showSettings = false
+
+	private struct AppFilterChip: Identifiable {
+		let id: String
+		let title: String
+	}
+
+	private let filters: [AppFilterChip] = [
+		AppFilterChip(id: "all", title: "الكل"),
+		AppFilterChip(id: "social", title: "إنستغرام وتواصل"),
+		AppFilterChip(id: "media", title: "تصوير ومونتاج"),
+		AppFilterChip(id: "tools", title: "أدوات"),
+		AppFilterChip(id: "design", title: "تصميم وإنتاجية")
+	]
+
+	private var filteredApps: [RoomStoreApp] {
+		if selectedFilter == "all" {
+			return viewModel.appsList
+		}
+		return viewModel.appsList.filter { $0.subCategory == selectedFilter }
+	}
+
+	var body: some View {
+		ScrollView(showsIndicators: false) {
+			VStack(alignment: .leading, spacing: 18) {
+				// الترويسة + زر الإعدادات
+				HStack {
+					Text("التطبيقات")
+						.font(.system(size: 34, weight: .bold))
+						.foregroundStyle(.white)
+					Spacer()
+					Button {
+						showSettings = true
+					} label: {
+						Circle()
+							.fill(Color(white: 0.16))
+							.frame(width: 36, height: 36)
+							.overlay(
+								Image(systemName: "gearshape.fill")
+									.font(.subheadline)
+									.foregroundStyle(.white)
+							)
+					}
+				}
+				.padding(.horizontal)
+
+				// شريط الكبسولات الأفقي (الكل / إنستغرام وتواصل / تصوير / أدوات / تصميم)
+				ScrollView(.horizontal, showsIndicators: false) {
+					HStack(spacing: 10) {
+						ForEach(filters) { chip in
+							let isSelected = (selectedFilter == chip.id)
+							Button {
+								withAnimation(.easeInOut(duration: 0.2)) {
+									selectedFilter = chip.id
+								}
+							} label: {
+								Text(chip.title)
+									.font(.subheadline.bold())
+									.padding(.horizontal, 18)
+									.padding(.vertical, 9)
+									.background(isSelected ? Color.blue : Color(white: 0.16))
+									.foregroundStyle(.white)
+									.clipShape(Capsule())
+							}
+							.buttonStyle(.plain)
+						}
+					}
+					.padding(.horizontal)
+				}
+
+				// بطاقات مميزة للتطبيقات في القسم المختار
+				if !filteredApps.isEmpty {
+					ScrollView(.horizontal, showsIndicators: false) {
+						HStack(spacing: 14) {
+							ForEach(filteredApps.prefix(4)) { app in
+								Button {
+									selectedApp = app
+								} label: {
+									FeaturedHorizontalCard(app: app, badge: "تطبيق مميز")
+								}
+								.buttonStyle(.plain)
+							}
+						}
+						.padding(.horizontal)
+					}
+
+					// القائمة العمودية للتطبيقات
+					VStack(alignment: .leading, spacing: 14) {
+						Text(filters.first(where: { $0.id == selectedFilter })?.title ?? "جميع التطبيقات")
 							.font(.title2.bold())
 							.foregroundStyle(.white)
 							.padding(.horizontal)
 
-						ForEach(viewModel.allApps) { app in
+						ForEach(filteredApps) { app in
 							Button {
 								selectedApp = app
 							} label: {
@@ -405,39 +674,60 @@ struct RoomTodayView: View {
 							.buttonStyle(.plain)
 						}
 					}
+				} else {
+					VStack(spacing: 12) {
+						Image(systemName: "square.stack.3d.up")
+							.font(.largeTitle)
+							.foregroundStyle(.gray)
+						Text("لا توجد تطبيقات في هذا القسم حالياً")
+							.foregroundStyle(.gray)
+					}
+					.frame(maxWidth: .infinity)
+					.padding(.top, 70)
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 90)
+			.padding(.bottom, 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedApp) { app in
 			RoomAppDetailView(app: app, viewModel: viewModel)
 		}
-	}
-
-	private var todayGradient: some View {
-		LinearGradient(
-			colors: [Color(red: 0.04, green: 0.22, blue: 0.35), Color(red: 0.02, green: 0.08, blue: 0.14)],
-			startPoint: .top,
-			endPoint: .bottom
-		)
+		.sheet(isPresented: $showSettings) {
+			TabEnum.view(for: .settings)
+		}
 	}
 }
 
-// MARK: - 3. واجهة الألعاب (Games)
+// MARK: - 4. واجهة الألعاب (Games - بنفس التصميم مع تفعيل صور الألعاب في البطاقات العلوية)
 struct RoomGamesView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var selectedApp: RoomStoreApp? = nil
+	@State private var showSettings = false
 
 	var body: some View {
 		ScrollView(showsIndicators: false) {
 			VStack(alignment: .leading, spacing: 22) {
-				Text("الألعاب")
-					.font(.system(size: 34, weight: .bold))
-					.foregroundStyle(.white)
-					.padding(.horizontal)
+				HStack {
+					Text("الألعاب")
+						.font(.system(size: 34, weight: .bold))
+						.foregroundStyle(.white)
+					Spacer()
+					Button {
+						showSettings = true
+					} label: {
+						Circle()
+							.fill(Color(white: 0.16))
+							.frame(width: 36, height: 36)
+							.overlay(
+								Image(systemName: "gearshape.fill")
+									.font(.subheadline)
+									.foregroundStyle(.white)
+							)
+					}
+				}
+				.padding(.horizontal)
 
 				if viewModel.gamesList.isEmpty {
 					VStack(spacing: 12) {
@@ -450,34 +740,14 @@ struct RoomGamesView: View {
 					.frame(maxWidth: .infinity)
 					.padding(.top, 80)
 				} else {
+					// البطاقات العلوية مع صور وأيقونات الألعاب الحقيقية
 					ScrollView(.horizontal, showsIndicators: false) {
 						HStack(spacing: 14) {
-							ForEach(viewModel.gamesList.prefix(3)) { game in
+							ForEach(viewModel.gamesList.prefix(4)) { game in
 								Button {
 									selectedApp = game
 								} label: {
-									ZStack(alignment: .bottomLeading) {
-										LinearGradient(
-											colors: [Color(red: 0.18, green: 0.12, blue: 0.35), Color.black],
-											startPoint: .topLeading,
-											endPoint: .bottomTrailing
-										)
-
-										VStack(alignment: .leading, spacing: 4) {
-											Text("لعبة مميزة")
-												.font(.caption.bold())
-												.foregroundStyle(.blue)
-											Text(game.name)
-												.font(.title2.bold())
-												.foregroundStyle(.white)
-											Text(game.subtitle)
-												.font(.caption)
-												.foregroundStyle(.white.opacity(0.75))
-										}
-										.padding(16)
-									}
-									.frame(width: 290, height: 180)
-									.clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+									FeaturedHorizontalCard(app: game, badge: "لعبة مميزة")
 								}
 								.buttonStyle(.plain)
 							}
@@ -504,22 +774,84 @@ struct RoomGamesView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 90)
+			.padding(.bottom, 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedApp) { app in
 			RoomAppDetailView(app: app, viewModel: viewModel)
 		}
+		.sheet(isPresented: $showSettings) {
+			TabEnum.view(for: .settings)
+		}
 	}
 }
 
-// MARK: - 4. واجهة البحث (Search - تصميم App Store)
+struct FeaturedHorizontalCard: View {
+	let app: RoomStoreApp
+	let badge: String
+
+	var body: some View {
+		ZStack(alignment: .bottomLeading) {
+			AsyncImage(url: URL(string: app.iconURL)) { image in
+				image
+					.resizable()
+					.scaledToFill()
+					.frame(width: 295, height: 185)
+					.blur(radius: 22)
+					.opacity(0.6)
+			} placeholder: {
+				LinearGradient(
+					colors: [Color(red: 0.18, green: 0.12, blue: 0.35), Color.black],
+					startPoint: .topLeading,
+					endPoint: .bottomTrailing
+				)
+			}
+			.frame(width: 295, height: 185)
+			.clipped()
+
+			LinearGradient(
+				colors: [.black.opacity(0.15), .black.opacity(0.88)],
+				startPoint: .top,
+				endPoint: .bottom
+			)
+
+			VStack(alignment: .leading, spacing: 10) {
+				HStack(spacing: 12) {
+					RoomAppIconView(urlString: app.iconURL, size: 58, radius: 14)
+						.shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+
+					VStack(alignment: .leading, spacing: 3) {
+						Text(badge)
+							.font(.caption.bold())
+							.foregroundStyle(.blue)
+						Text(app.name)
+							.font(.title3.bold())
+							.foregroundStyle(.white)
+							.lineLimit(1)
+					}
+					Spacer()
+				}
+
+				Text(app.subtitle)
+					.font(.caption)
+					.foregroundStyle(.white.opacity(0.8))
+					.lineLimit(1)
+			}
+			.padding(16)
+		}
+		.frame(width: 295, height: 185)
+		.clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+	}
+}
+
+// MARK: - 5. واجهة البحث (Search - تصميم App Store)
 struct RoomSearchView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var searchText = ""
 	@State private var selectedCategory: String? = nil
 	@State private var selectedApp: RoomStoreApp? = nil
+	@State private var showSettings = false
 
 	private struct BrowseCat: Identifiable {
 		let id = UUID()
@@ -530,12 +862,12 @@ struct RoomSearchView: View {
 	}
 
 	private let categories: [BrowseCat] = [
-		BrowseCat(title: "التطبيقات الأكثر\nتنزيلاً", key: "apps", icon: "trophy.fill", colors: [Color(red: 0.35, green: 0.65, blue: 0.95), Color(red: 0.20, green: 0.45, blue: 0.85)]),
+		BrowseCat(title: "إنستغرام\nوتواصل اجتماعي", key: "social", icon: "bubble.left.and.bubble.right.fill", colors: [Color(red: 0.35, green: 0.65, blue: 0.95), Color(red: 0.20, green: 0.45, blue: 0.85)]),
 		BrowseCat(title: "الألعاب الأكثر\nتنزيلاً", key: "games", icon: "gamecontroller.fill", colors: [Color(red: 0.95, green: 0.62, blue: 0.35), Color(red: 0.85, green: 0.42, blue: 0.22)]),
-		BrowseCat(title: "تطبيقات\nالبث والمشاهدة", key: "apps", icon: "play.tv.fill", colors: [Color(red: 0.25, green: 0.78, blue: 0.52), Color(red: 0.14, green: 0.58, blue: 0.38)]),
-		BrowseCat(title: "ألعاب\nمعدلة ومفتوحة", key: "games", icon: "sparkles", colors: [Color(red: 0.62, green: 0.48, blue: 0.95), Color(red: 0.45, green: 0.30, blue: 0.80)]),
-		BrowseCat(title: "أدوات\nوتخصيص", key: "apps", icon: "wrench.and.screwdriver.fill", colors: [Color(red: 0.95, green: 0.68, blue: 0.25), Color(red: 0.82, green: 0.50, blue: 0.15)]),
-		BrowseCat(title: "تواصل\nاجتماعي", key: "apps", icon: "bubble.left.and.bubble.right.fill", colors: [Color(red: 0.30, green: 0.75, blue: 0.90), Color(red: 0.18, green: 0.55, blue: 0.78)])
+		BrowseCat(title: "تصوير\nومونتاج فيديو", key: "media", icon: "play.tv.fill", colors: [Color(red: 0.25, green: 0.78, blue: 0.52), Color(red: 0.14, green: 0.58, blue: 0.38)]),
+		BrowseCat(title: "تصميم\nوإنتاجية", key: "design", icon: "sparkles", colors: [Color(red: 0.62, green: 0.48, blue: 0.95), Color(red: 0.45, green: 0.30, blue: 0.80)]),
+		BrowseCat(title: "أدوات\nوتخصيص", key: "tools", icon: "wrench.and.screwdriver.fill", colors: [Color(red: 0.95, green: 0.68, blue: 0.25), Color(red: 0.82, green: 0.50, blue: 0.15)]),
+		BrowseCat(title: "التطبيقات الأكثر\nتنزيلاً", key: "apps", icon: "trophy.fill", colors: [Color(red: 0.30, green: 0.75, blue: 0.90), Color(red: 0.18, green: 0.55, blue: 0.78)])
 	]
 
 	private var filteredApps: [RoomStoreApp] {
@@ -543,7 +875,12 @@ struct RoomSearchView: View {
 			let matchesText = searchText.isEmpty ||
 				app.name.localizedCaseInsensitiveContains(searchText) ||
 				app.subtitle.localizedCaseInsensitiveContains(searchText)
-			let matchesCat = selectedCategory == nil || app.category == selectedCategory
+			let matchesCat: Bool
+			if let cat = selectedCategory {
+				matchesCat = (cat == "apps") ? (app.category == "apps") : (app.subCategory == cat)
+			} else {
+				matchesCat = true
+			}
 			return matchesText && matchesCat
 		}
 	}
@@ -556,10 +893,14 @@ struct RoomSearchView: View {
 						.font(.system(size: 34, weight: .bold))
 						.foregroundStyle(.white)
 					Spacer()
-					Circle()
-						.fill(Color.white.opacity(0.15))
-						.frame(width: 36, height: 36)
-						.overlay(Image(systemName: "person.fill").foregroundStyle(.white))
+					Button {
+						showSettings = true
+					} label: {
+						Circle()
+							.fill(Color.white.opacity(0.15))
+							.frame(width: 36, height: 36)
+							.overlay(Image(systemName: "gearshape.fill").foregroundStyle(.white))
+					}
 				}
 				.padding(.horizontal)
 
@@ -604,7 +945,7 @@ struct RoomSearchView: View {
 					.padding(.horizontal)
 
 					VStack(spacing: 10) {
-						ForEach(Array(filteredApps.prefix(4).enumerated()), id: \.element.id) { index, app in
+						ForEach(Array(filteredApps.prefix(5).enumerated()), id: \.element.id) { index, app in
 							let isFirstFeatured = (index == 0 && searchText.isEmpty && selectedCategory == nil)
 							Button {
 								selectedApp = app
@@ -707,33 +1048,36 @@ struct RoomSearchView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 90)
+			.padding(.bottom, 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedApp) { app in
 			RoomAppDetailView(app: app, viewModel: viewModel)
 		}
+		.sheet(isPresented: $showSettings) {
+			TabEnum.view(for: .settings)
+		}
 	}
 }
 
-// MARK: - 5. صفحة تفاصيل التطبيق والتثبيت الكاملة
+// MARK: - 6. صفحة تفاصيل التطبيق والتثبيت الكاملة
 struct RoomAppDetailView: View {
 	let app: RoomStoreApp
 	@ObservedObject var viewModel: RoomStoreViewModel
-	var onInstallIPA: ((URL) -> Void)? = nil
 
 	@Environment(\.dismiss) private var dismiss
 	@State private var selectedTab = 0
 	@State private var copiedBundle = false
 	@State private var showReportAlert = false
+	@State private var showStartedBanner = false
 	@State private var selectedSimilarApp: RoomStoreApp? = nil
 
 	private var similarApps: [RoomStoreApp] {
 		Array(viewModel.allApps.filter { $0.id != app.id }.prefix(10))
 	}
 
-	private var isDownloadingThis: Bool {
+	private var isStartingInstall: Bool {
 		viewModel.downloadingAppID == app.id
 	}
 
@@ -815,6 +1159,19 @@ struct RoomAppDetailView: View {
 						.padding(.vertical, 12)
 						.background(Color.green.opacity(0.14))
 						.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+						if showStartedBanner {
+							HStack(spacing: 8) {
+								Image(systemName: "arrow.down.circle.fill")
+								Text("بدأ التحميل! افتح تبويب المصادر > المكتبة (IPA) لتوقيع التطبيق وتثبيته.")
+									.font(.caption.bold())
+							}
+							.foregroundStyle(.white)
+							.padding(12)
+							.frame(maxWidth: .infinity, alignment: .leading)
+							.background(Color.blue.opacity(0.28))
+							.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+						}
 
 						if selectedTab == 0 {
 							VStack(alignment: .leading, spacing: 8) {
@@ -973,7 +1330,7 @@ struct RoomAppDetailView: View {
 							)
 					}
 					Spacer()
-					if let shareURL = URL(string: app.downloadURL) {
+					if let shareURL = URL(string: app.downloadURL), !app.downloadURL.isEmpty {
 						ShareLink(item: shareURL) {
 							Circle()
 								.fill(Color.black.opacity(0.6))
@@ -991,17 +1348,16 @@ struct RoomAppDetailView: View {
 				Spacer()
 			}
 
+			// شريط التثبيت السفلي الثابت
 			HStack(spacing: 10) {
 				Button {
-					viewModel.downloadAndImport(app) { localURL in
-						onInstallIPA?(localURL)
-						dismiss()
-					}
+					viewModel.startInstall(app)
+					withAnimation { showStartedBanner = true }
 				} label: {
 					HStack(spacing: 8) {
-						if isDownloadingThis {
+						if isStartingInstall {
 							ProgressView().tint(.white)
-							Text("جاري التنزيل \(Int(viewModel.downloadProgress * 100))%")
+							Text("جاري إرسال الملف للمكتبة...")
 								.font(.headline)
 						} else {
 							Image(systemName: "arrow.down.to.line")
@@ -1013,10 +1369,10 @@ struct RoomAppDetailView: View {
 					.foregroundStyle(.white)
 					.frame(maxWidth: .infinity)
 					.frame(height: 50)
-					.background(Color.blue)
+					.background(app.downloadURL.isEmpty ? Color.gray : Color.blue)
 					.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 				}
-				.disabled(isDownloadingThis)
+				.disabled(app.downloadURL.isEmpty || isStartingInstall)
 
 				Button {
 					UIPasteboard.general.string = app.downloadURL
@@ -1046,7 +1402,7 @@ struct RoomAppDetailView: View {
 		}
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedSimilarApp) { nextApp in
-			RoomAppDetailView(app: nextApp, viewModel: viewModel, onInstallIPA: onInstallIPA)
+			RoomAppDetailView(app: nextApp, viewModel: viewModel)
 		}
 		.alert("الإبلاغ عن مشكلة", isPresented: $showReportAlert) {
 			Button("حسناً", role: .cancel) { }
@@ -1056,7 +1412,7 @@ struct RoomAppDetailView: View {
 	}
 }
 
-// MARK: - 6. المكونات المساعدة
+// MARK: - 7. المكونات المساعدة
 struct RoomStoreAppRow: View {
 	let app: RoomStoreApp
 
