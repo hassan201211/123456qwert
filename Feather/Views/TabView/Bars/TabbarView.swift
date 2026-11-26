@@ -9,7 +9,11 @@ import SwiftUI
 import UIKit
 
 struct TabbarView: View {
-	@State private var selectedTab: TabEnum = .sources
+	@State private var selectedTab: TabEnum = TabEnum.defaultTabs.first {
+		let k = "\($0) \($0.title)".lowercased()
+		return k.contains("اليوم") || k.contains("today") || k.contains("home")
+	} ?? TabEnum.defaultTabs.first ?? .sources
+
 	@StateObject private var roomStoreVM = RoomStoreViewModel()
 
 	var body: some View {
@@ -49,7 +53,7 @@ struct TabbarView: View {
 // MARK: - 0. دمج المصادر + استيراد وتوقيع ملفات IPA
 struct RoomSourcesAndLibraryView: View {
 	let sourcesTab: TabEnum
-	@State private var selectedSection = 0 // 0 = المصادر, 1 = المكتبة و IPA
+	@State private var selectedSection = 0
 	@State private var showSettings = false
 
 	private var libraryTab: TabEnum {
@@ -61,7 +65,6 @@ struct RoomSourcesAndLibraryView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			// شريط تبديل علوي يدمج المصادر مع مكتبة ملفات IPA
 			HStack(spacing: 10) {
 				Picker("", selection: $selectedSection) {
 					Text("المصادر").tag(0)
@@ -104,8 +107,8 @@ struct RoomStoreApp: Identifiable, Codable, Hashable {
 	let name: String
 	let subtitle: String
 	let description: String?
-	let category: String // "apps" أو "games"
-	let subCategory: String // "social", "media", "tools", "design", "games"
+	let category: String
+	let subCategory: String
 	let featured: Bool?
 	let featuredTitle: String?
 	let featuredSubtitle: String?
@@ -273,6 +276,7 @@ class RoomStoreViewModel: ObservableObject {
 	@Published var allApps: [RoomStoreApp] = []
 	@Published var favoriteIDs: Set<String> = []
 	@Published var downloadingAppID: String? = nil
+	@Published var readyToSignAppID: String? = nil
 	@Published var isLoading = false
 
 	private let defaultRepoURL = "https://raw.githubusercontent.com/hassan201211/123456qwert/refs/heads/main/apps.json"
@@ -310,7 +314,6 @@ class RoomStoreViewModel: ObservableObject {
 			var seenBundles = Set<String>()
 			var uniqueApps: [RoomStoreApp] = []
 
-			// إضافة تطبيق إنستغرام المعدل في المقدمة إذا لم يكن موجوداً في المستودع
 			let hasInsta = repo.apps.contains { ($0.name.lowercased().contains("insta")) }
 			if !hasInsta {
 				uniqueApps.append(Self.instagramBeeApp)
@@ -341,11 +344,18 @@ class RoomStoreViewModel: ObservableObject {
 	}
 
 	func startInstall(_ app: RoomStoreApp) {
-		guard let url = URL(string: app.downloadURL), !app.downloadURL.isEmpty else { return }
+		guard let url = URL(string: app.downloadURL), !app.downloadURL.isEmpty, downloadingAppID == nil else { return }
 		downloadingAppID = app.id
+		readyToSignAppID = nil
 		_ = DownloadManager.shared.startDownload(from: url, id: app.id)
-		DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+
+		Task {
+			try? await Task.sleep(nanoseconds: 800_000_000)
+			while DownloadManager.shared.getDownload(by: app.id) != nil {
+				try? await Task.sleep(nanoseconds: 500_000_000)
+			}
 			self.downloadingAppID = nil
+			self.readyToSignAppID = app.id
 		}
 	}
 
@@ -374,7 +384,7 @@ class RoomStoreViewModel: ObservableObject {
 	static let featuredStarterApps: [RoomStoreApp] = [instagramBeeApp]
 }
 
-// MARK: - 2. واجهة اليوم (Today - بصور حقيقية + قسم الألعاب + قسم التطبيقات)
+// MARK: - 2. واجهة اليوم (Today)
 struct RoomTodayView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var selectedApp: RoomStoreApp? = nil
@@ -383,7 +393,6 @@ struct RoomTodayView: View {
 	var body: some View {
 		ScrollView(showsIndicators: false) {
 			VStack(alignment: .leading, spacing: 24) {
-				// 1. الترويسة + زر الإعدادات المفعّل
 				HStack {
 					VStack(alignment: .leading, spacing: 2) {
 						Text("اليوم")
@@ -406,7 +415,6 @@ struct RoomTodayView: View {
 				}
 				.padding(.horizontal)
 
-				// 2. البطاقات المميزة الكبيرة بصور وأيقونات واضحة
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 16) {
 						ForEach(viewModel.todayFeatured) { app in
@@ -421,7 +429,6 @@ struct RoomTodayView: View {
 					.padding(.horizontal)
 				}
 
-				// 3. قسم الألعاب أسفل البطاقة الرئيسية
 				if !viewModel.gamesList.isEmpty {
 					VStack(alignment: .leading, spacing: 14) {
 						HStack(spacing: 4) {
@@ -448,7 +455,6 @@ struct RoomTodayView: View {
 					}
 				}
 
-				// 4. قسم التطبيقات المعدلة أسفل الألعاب
 				if !viewModel.appsList.isEmpty {
 					VStack(alignment: .leading, spacing: 14) {
 						HStack(spacing: 4) {
@@ -494,7 +500,6 @@ struct TodayVisualCard: View {
 
 	var body: some View {
 		ZStack {
-			// خلفية متوهجة من صورة التطبيق نفسها
 			AsyncImage(url: URL(string: app.iconURL)) { image in
 				image
 					.resizable()
@@ -532,7 +537,6 @@ struct TodayVisualCard: View {
 
 				Spacer()
 
-				// أيقونة التطبيق الحقيقية بحجم واضح
 				RoomAppIconView(urlString: app.iconURL, size: 76, radius: 18)
 					.shadow(color: .black.opacity(0.5), radius: 10, y: 5)
 
@@ -566,7 +570,7 @@ struct TodayVisualCard: View {
 	}
 }
 
-// MARK: - 3. واجهة التطبيقات (Apps - مع شريط التصنيفات الأفقي)
+// MARK: - 3. واجهة التطبيقات (Apps)
 struct RoomAppsView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var selectedFilter = "all"
@@ -596,7 +600,6 @@ struct RoomAppsView: View {
 	var body: some View {
 		ScrollView(showsIndicators: false) {
 			VStack(alignment: .leading, spacing: 18) {
-				// الترويسة + زر الإعدادات
 				HStack {
 					Text("التطبيقات")
 						.font(.system(size: 34, weight: .bold))
@@ -617,7 +620,6 @@ struct RoomAppsView: View {
 				}
 				.padding(.horizontal)
 
-				// شريط الكبسولات الأفقي (الكل / إنستغرام وتواصل / تصوير / أدوات / تصميم)
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 10) {
 						ForEach(filters) { chip in
@@ -641,7 +643,6 @@ struct RoomAppsView: View {
 					.padding(.horizontal)
 				}
 
-				// بطاقات مميزة للتطبيقات في القسم المختار
 				if !filteredApps.isEmpty {
 					ScrollView(.horizontal, showsIndicators: false) {
 						HStack(spacing: 14) {
@@ -657,7 +658,6 @@ struct RoomAppsView: View {
 						.padding(.horizontal)
 					}
 
-					// القائمة العمودية للتطبيقات
 					VStack(alignment: .leading, spacing: 14) {
 						Text(filters.first(where: { $0.id == selectedFilter })?.title ?? "جميع التطبيقات")
 							.font(.title2.bold())
@@ -700,7 +700,7 @@ struct RoomAppsView: View {
 	}
 }
 
-// MARK: - 4. واجهة الألعاب (Games - بنفس التصميم مع تفعيل صور الألعاب في البطاقات العلوية)
+// MARK: - 4. واجهة الألعاب (Games)
 struct RoomGamesView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var selectedApp: RoomStoreApp? = nil
@@ -740,7 +740,6 @@ struct RoomGamesView: View {
 					.frame(maxWidth: .infinity)
 					.padding(.top, 80)
 				} else {
-					// البطاقات العلوية مع صور وأيقونات الألعاب الحقيقية
 					ScrollView(.horizontal, showsIndicators: false) {
 						HStack(spacing: 14) {
 							ForEach(viewModel.gamesList.prefix(4)) { game in
@@ -845,7 +844,7 @@ struct FeaturedHorizontalCard: View {
 	}
 }
 
-// MARK: - 5. واجهة البحث (Search - تصميم App Store)
+// MARK: - 5. واجهة البحث (Search)
 struct RoomSearchView: View {
 	@ObservedObject var viewModel: RoomStoreViewModel
 	@State private var searchText = ""
@@ -1061,7 +1060,7 @@ struct RoomSearchView: View {
 	}
 }
 
-// MARK: - 6. صفحة تفاصيل التطبيق والتثبيت الكاملة
+// MARK: - 6. صفحة تفاصيل التطبيق + التوقيع والتثبيت المباشر في نفس الواجهة
 struct RoomAppDetailView: View {
 	let app: RoomStoreApp
 	@ObservedObject var viewModel: RoomStoreViewModel
@@ -1070,15 +1069,22 @@ struct RoomAppDetailView: View {
 	@State private var selectedTab = 0
 	@State private var copiedBundle = false
 	@State private var showReportAlert = false
-	@State private var showStartedBanner = false
+	@State private var showSigningSheet = false
 	@State private var selectedSimilarApp: RoomStoreApp? = nil
 
 	private var similarApps: [RoomStoreApp] {
 		Array(viewModel.allApps.filter { $0.id != app.id }.prefix(10))
 	}
 
-	private var isStartingInstall: Bool {
+	private var isDownloadingThis: Bool {
 		viewModel.downloadingAppID == app.id
+	}
+
+	private var libraryTab: TabEnum {
+		TabEnum.defaultTabs.first {
+			let k = "\($0) \($0.title)".lowercased()
+			return k.contains("التطبيقات") || k.contains("library") || k.contains("المكتبة")
+		} ?? .sources
 	}
 
 	var body: some View {
@@ -1159,19 +1165,6 @@ struct RoomAppDetailView: View {
 						.padding(.vertical, 12)
 						.background(Color.green.opacity(0.14))
 						.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-						if showStartedBanner {
-							HStack(spacing: 8) {
-								Image(systemName: "arrow.down.circle.fill")
-								Text("بدأ التحميل! افتح تبويب المصادر > المكتبة (IPA) لتوقيع التطبيق وتثبيته.")
-									.font(.caption.bold())
-							}
-							.foregroundStyle(.white)
-							.padding(12)
-							.frame(maxWidth: .infinity, alignment: .leading)
-							.background(Color.blue.opacity(0.28))
-							.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-						}
 
 						if selectedTab == 0 {
 							VStack(alignment: .leading, spacing: 8) {
@@ -1352,12 +1345,11 @@ struct RoomAppDetailView: View {
 			HStack(spacing: 10) {
 				Button {
 					viewModel.startInstall(app)
-					withAnimation { showStartedBanner = true }
 				} label: {
 					HStack(spacing: 8) {
-						if isStartingInstall {
+						if isDownloadingThis {
 							ProgressView().tint(.white)
-							Text("جاري إرسال الملف للمكتبة...")
+							Text("جاري تحميل الـ IPA للتوقيع...")
 								.font(.headline)
 						} else {
 							Image(systemName: "arrow.down.to.line")
@@ -1372,7 +1364,7 @@ struct RoomAppDetailView: View {
 					.background(app.downloadURL.isEmpty ? Color.gray : Color.blue)
 					.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 				}
-				.disabled(app.downloadURL.isEmpty || isStartingInstall)
+				.disabled(app.downloadURL.isEmpty || isDownloadingThis)
 
 				Button {
 					UIPasteboard.general.string = app.downloadURL
@@ -1401,6 +1393,25 @@ struct RoomAppDetailView: View {
 			.background(Color.black.opacity(0.92))
 		}
 		.environment(\.layoutDirection, .rightToLeft)
+		.onChange(of: viewModel.readyToSignAppID) { completedID in
+			if completedID == app.id {
+				viewModel.readyToSignAppID = nil
+				showSigningSheet = true
+			}
+		}
+		.sheet(isPresented: $showSigningSheet) {
+			NavigationStack {
+				TabEnum.view(for: libraryTab)
+					.toolbar {
+						ToolbarItem(placement: .topBarLeading) {
+							Button("إغلاق") {
+								showSigningSheet = false
+							}
+						}
+					}
+			}
+			.environment(\.layoutDirection, .rightToLeft)
+		}
 		.sheet(item: $selectedSimilarApp) { nextApp in
 			RoomAppDetailView(app: nextApp, viewModel: viewModel)
 		}
