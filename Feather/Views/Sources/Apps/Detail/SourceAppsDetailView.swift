@@ -12,6 +12,7 @@ import AltSourceKit
 struct SourceAppsDetailView: View {
 	var source: ASRepository
 	var app: ASRepository.App
+	var sourceURL: URL? = nil
 
 	@Environment(\.dismiss) private var dismiss
 	@ObservedObject private var downloadManager = DownloadManager.shared
@@ -24,12 +25,11 @@ struct SourceAppsDetailView: View {
 
 	private var appName: String {
 		let raw = app.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		return raw.isEmpty ? (app.bundleIdentifier?.components(separatedBy: ".").last ?? "تطبيق معدل") : raw
+		return raw.isEmpty ? "تطبيق معدل" : raw
 	}
 
 	private var appSubtitle: String {
 		if let sub = app.subtitle, !sub.isEmpty { return sub }
-		if let dev = app.developerName, !dev.isEmpty { return dev }
 		return source.name ?? "تطبيق معدل"
 	}
 
@@ -44,15 +44,18 @@ struct SourceAppsDetailView: View {
 	}
 
 	private var appBundleId: String {
-		app.bundleIdentifier ?? "com.room.app"
+		if let idVal = Mirror(reflecting: app).children.first(where: { $0.label == "id" || $0.label == "bundleIdentifier" })?.value as? String, !idVal.isEmpty {
+			return idVal
+		}
+		return "com.room.app"
 	}
 
 	private var appDownloadURL: URL? {
-		app.currentDownloadURL ?? app.downloadURL
+		app.downloadURL
 	}
 
 	private var formattedSize: String {
-		let bytes = app.currentSize ?? app.size ?? 0
+		let bytes = app.size ?? 0
 		guard bytes > 0 else { return "غير محدد" }
 		let formatter = ByteCountFormatter()
 		formatter.allowedUnits = [.useMB, .useGB]
@@ -80,7 +83,6 @@ struct SourceAppsDetailView: View {
 
 			ScrollView(showsIndicators: false) {
 				VStack(spacing: 18) {
-					// 1. الخلفية العلوية الضبابية + الأيقونة والاسم
 					ZStack(alignment: .bottom) {
 						AsyncImage(url: app.iconURL) { image in
 							image.resizable().scaledToFill()
@@ -129,7 +131,6 @@ struct SourceAppsDetailView: View {
 					}
 
 					VStack(alignment: .leading, spacing: 18) {
-						// 2. شريط التبديل (نظرة عامة / التقييمات)
 						HStack(spacing: 0) {
 							DetailPillButton(title: "نظرة عامة", isSelected: selectedTab == 0) {
 								withAnimation(.easeInOut(duration: 0.2)) { selectedTab = 0 }
@@ -142,7 +143,6 @@ struct SourceAppsDetailView: View {
 						.background(Color(white: 0.11))
 						.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-						// 3. شريط التوافق الأخضر
 						HStack(spacing: 8) {
 							Image(systemName: "checkmark.shield")
 								.font(.subheadline.bold())
@@ -158,7 +158,6 @@ struct SourceAppsDetailView: View {
 						.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
 						if selectedTab == 0 {
-							// 4. عن التطبيق
 							VStack(alignment: .leading, spacing: 8) {
 								Text("عن التطبيق")
 									.font(.title3.bold())
@@ -170,7 +169,6 @@ struct SourceAppsDetailView: View {
 									.lineSpacing(5)
 							}
 
-							// لقطات الشاشة إن وجدت
 							if let screenshots = app.screenshotURLs, !screenshots.isEmpty {
 								ScrollView(.horizontal, showsIndicators: false) {
 									HStack(spacing: 12) {
@@ -188,7 +186,6 @@ struct SourceAppsDetailView: View {
 								}
 							}
 
-							// 5. جدول المواصفات
 							VStack(alignment: .leading, spacing: 10) {
 								Text("المواصفات")
 									.font(.title3.bold())
@@ -204,7 +201,7 @@ struct SourceAppsDetailView: View {
 									}
 									Divider().background(Color.white.opacity(0.1))
 									HStack(spacing: 0) {
-										DetailSpecCell(title: "المطور", value: app.developerName?.isEmpty == false ? app.developerName! : "معدّل")
+										DetailSpecCell(title: "المطور", value: source.name ?? "معدّل")
 										Divider().background(Color.white.opacity(0.1))
 										DetailSpecCell(title: "المصدر", value: source.name ?? "Room")
 										Divider().background(Color.white.opacity(0.1))
@@ -215,7 +212,6 @@ struct SourceAppsDetailView: View {
 								.clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 							}
 
-							// 6. المعرف + زر النسخ
 							HStack(spacing: 12) {
 								Text("المعرف")
 									.font(.subheadline)
@@ -252,7 +248,6 @@ struct SourceAppsDetailView: View {
 							.background(Color(white: 0.11))
 							.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-							// 7. تطبيقات مشابهة من نفس المصدر
 							if !similarApps.isEmpty {
 								VStack(alignment: .leading, spacing: 12) {
 									Text("تطبيقات مشابهة")
@@ -281,7 +276,6 @@ struct SourceAppsDetailView: View {
 								}
 							}
 
-							// 8. الإبلاغ عن مشكلة
 							Button {
 								showReportAlert = true
 							} label: {
@@ -301,7 +295,6 @@ struct SourceAppsDetailView: View {
 								.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 							}
 						} else {
-							// تبويب التقييمات
 							VStack(spacing: 12) {
 								Image(systemName: "star.leadinghalf.filled")
 									.font(.largeTitle)
@@ -325,7 +318,6 @@ struct SourceAppsDetailView: View {
 			}
 			.ignoresSafeArea(edges: .top)
 
-			// 9. أزرار التنقل العلوية
 			VStack {
 				HStack {
 					Button {
@@ -361,7 +353,6 @@ struct SourceAppsDetailView: View {
 				Spacer()
 			}
 
-			// 10. شريط التثبيت السفلي الثابت
 			HStack(spacing: 10) {
 				Button {
 					if let url = appDownloadURL, !isDownloading {
@@ -422,7 +413,7 @@ struct SourceAppsDetailView: View {
 		.navigationBarBackButtonHidden(true)
 		.environment(\.layoutDirection, .rightToLeft)
 		.sheet(item: $selectedSimilarApp) { nextApp in
-			SourceAppsDetailView(source: source, app: nextApp)
+			SourceAppsDetailView(source: source, app: nextApp, sourceURL: sourceURL)
 		}
 		.alert("الإبلاغ عن مشكلة", isPresented: $showReportAlert) {
 			Button("حسناً", role: .cancel) { }
