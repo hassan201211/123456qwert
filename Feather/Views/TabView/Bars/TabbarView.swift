@@ -33,7 +33,7 @@ struct TabbarView: View {
 	static func applyOptimalInstallDefaults() {
 		UserDefaults.standard.set(0, forKey: "Feather.installationMethod")
 		UserDefaults.standard.set(0, forKey: "Feather.serverMethod")
-		UserDefaults.standard.set(false, forKey: "Feather.ipFix")
+		UserDefaults.standard.set(true, forKey: "Feather.ipFix")
 	}
 
 	var body: some View {
@@ -590,7 +590,6 @@ class RoomStoreViewModel: ObservableObject {
 		let downloader = RoomIPADownloader(
 			onProgress: { [weak self] dlRatio in
 				guard let self, self.installStage == .downloading else { return }
-				// مرحلة التحميل: 2% إلى 55%
 				self.progressValue = 0.02 + (dlRatio * 0.53)
 			},
 			onCompletion: { [weak self] result in
@@ -737,6 +736,8 @@ class RoomStoreViewModel: ObservableObject {
 			server.packageUrl = packageUrl
 			statusVM.status = .ready
 
+			try? await Task.sleep(nanoseconds: 150_000_000)
+
 			self.progressTimer?.invalidate()
 			self.progressTimer = nil
 			self.progressValue = 1.0
@@ -749,7 +750,6 @@ class RoomStoreViewModel: ObservableObject {
 				await UIApplication.shared.open(itunesURL)
 			}
 
-			// إبقاء السيرفر والصوت الخلفي نشطين 90 ثانية لضمان اكتمال التثبيت على الشاشة الرئيسية حتى عند الخروج من التطبيق
 			try? await Task.sleep(nanoseconds: 90_000_000_000)
 			if self.installStage == .readyToInstall {
 				self.installStage = .idle
