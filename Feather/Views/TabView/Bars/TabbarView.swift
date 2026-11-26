@@ -9,6 +9,7 @@ import SwiftUI
 import UIKit
 import CoreData
 import NimbleViews
+import IDeviceSwift
 
 struct TabbarView: View {
 	@State private var selectedTab: TabEnum = TabEnum.defaultTabs.first {
@@ -17,19 +18,63 @@ struct TabbarView: View {
 	} ?? TabEnum.defaultTabs.first ?? .sources
 
 	@StateObject private var roomStoreVM = RoomStoreViewModel()
+	@State private var presentedBannerApp: RoomStoreApp? = nil
+
+	@FetchRequest(
+		entity: Signed.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \Signed.date, ascending: false)],
+		animation: .snappy
+	) private var signedApps: FetchedResults<Signed>
 
 	var body: some View {
-		TabView(selection: $selectedTab) {
-			ForEach(TabEnum.defaultTabs, id: \.hashValue) { tab in
-				tabContent(for: tab)
-					.tabItem {
-						Label(tab.title, systemImage: tab.icon)
+		ZStack(alignment: .bottom) {
+			TabView(selection: $selectedTab) {
+				ForEach(TabEnum.defaultTabs, id: \.hashValue) { tab in
+					tabContent(for: tab)
+						.tabItem {
+							Label(tab.title, systemImage: tab.icon)
+						}
+						.tag(tab)
+				}
+			}
+
+			// الشريط العائم العام فوق التبويبات عند الخروج من صفحة التطبيق أثناء التحميل والتوقيع
+			if roomStoreVM.installStage != .idle, let activeApp = roomStoreVM.activeApp {
+				RoomFloatingInstallBar(
+					app: activeApp,
+					viewModel: roomStoreVM,
+					onTap: {
+						presentedBannerApp = activeApp
+					},
+					onActionTap: {
+						roomStoreVM.reopenNativeInstallPrompt()
 					}
-					.tag(tab)
+				)
+				.padding(.horizontal, 14)
+				.padding(.bottom, 64)
+				.transition(.move(edge: .bottom).combined(with: .opacity))
 			}
 		}
+		.animation(.spring(response: 0.35, dampingFraction: 0.85), value: roomStoreVM.installStage)
 		.task {
+			roomStoreVM.syncOwnedFromSigned(signedApps)
 			await roomStoreVM.fetchApps()
+		}
+		.onChange(of: signedApps.count) { _ in
+			roomStoreVM.syncOwnedFromSigned(signedApps)
+		}
+		.sheet(item: $presentedBannerApp) { app in
+			RoomAppDetailView(app: app, viewModel: roomStoreVM)
+		}
+		.alert("تنبيه التثبيت", isPresented: Binding(
+			get: { roomStoreVM.errorMessage != nil },
+			set: { if !$0 { roomStoreVM.errorMessage = nil } }
+		)) {
+			Button("حسناً", role: .cancel) {
+				roomStoreVM.errorMessage = nil
+			}
+		} message: {
+			Text(roomStoreVM.errorMessage ?? "")
 		}
 	}
 
@@ -273,7 +318,7 @@ struct RoomStoreRepo: Codable {
 	let apps: [RoomStoreApp]
 }
 
-// MARK: - أداة تحميل الـ IPA مع تتبع النسبة المئوية في الخلفية
+// MARK: - أداة تحميل الـ IPA مع تتبع النسبة المئوية
 final class RoomIPADownloader: NSObject, URLSessionDownloadDelegate {
 	private var session: URLSession?
 	private var task: URLSessionDownloadTask?
@@ -332,12 +377,14 @@ final class RoomIPADownloader: NSObject, URLSessionDownloadDelegate {
 class RoomStoreViewModel: ObservableObject {
 	enum InstallStage: Equatable {
 		case idle
-		case signing // يشمل التحميل + التوقيع الصامت بنسبة 0%..100%
+		case downloading
+		case signing
 		case readyToInstall
 	}
 
 	@Published var allApps: [RoomStoreApp] = []
 	@Published var favoriteIDs: Set<String> = []
+	@Published var ownedKeys: Set<String> = []
 	@Published var isLoading = false
 
 	// حالة التوقيع والتثبيت الصامت
@@ -345,13 +392,24 @@ class RoomStoreViewModel: ObservableObject {
 	@Published var installStage: InstallStage = .idle
 	@Published var progressValue: Double = 0.0
 	@Published var errorMessage: String? = nil
-	@Published var signedInstallSheetApp: AnyApp? = nil
 
 	private var activeDownloader: RoomIPADownloader? = nil
 	private var progressTimer: Timer? = nil
 	private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
+	// خادم التثبيت المباشر في الخلفية بدون فتح متصفح خارجي
+	private var activeStatusVM: InstallerStatusViewModel? = nil
+	private var activeServerInstaller: ServerInstaller? = nil
+	private var activeITunesURL: URL? = nil
+
+	private let ownedStorageKey = "Room.ownedAppKeys"
 	private let defaultRepoURL = "https://raw.githubusercontent.com/hassan201211/123456qwert/refs/heads/main/apps.json"
+
+	init() {
+		if let saved = UserDefaults.standard.array(forKey: ownedStorageKey) as? [String] {
+			self.ownedKeys = Set(saved)
+		}
+	}
 
 	var todayFeatured: [RoomStoreApp] {
 		let socialOrMedia = allApps.filter { $0.subCategory == "social" || $0.subCategory == "media" }
@@ -370,6 +428,40 @@ class RoomStoreViewModel: ObservableObject {
 		let sys = UIDevice.current.systemVersion
 		let model = UIDevice.current.model
 		return "متوافق مع الجهاز • \(model) • iOS \(sys)"
+	}
+
+	func isAppInProgress(_ app: RoomStoreApp) -> Bool {
+		activeApp?.id == app.id && (installStage == .downloading || installStage == .signing)
+	}
+
+	func isAppOwned(_ app: RoomStoreApp) -> Bool {
+		ownedKeys.contains(app.id)
+			|| ownedKeys.contains(app.name.lowercased())
+			|| ownedKeys.contains(app.safeBundleId.lowercased())
+	}
+
+	func markAsOwned(_ app: RoomStoreApp) {
+		ownedKeys.insert(app.id)
+		ownedKeys.insert(app.name.lowercased())
+		ownedKeys.insert(app.safeBundleId.lowercased())
+		UserDefaults.standard.set(Array(ownedKeys), forKey: ownedStorageKey)
+	}
+
+	func syncOwnedFromSigned(_ signedApps: FetchedResults<Signed>) {
+		var updated = false
+		for item in signedApps {
+			if let n = item.name?.lowercased(), !n.isEmpty, !ownedKeys.contains(n) {
+				ownedKeys.insert(n)
+				updated = true
+			}
+			if let b = item.identifier?.lowercased(), !b.isEmpty, !ownedKeys.contains(b) {
+				ownedKeys.insert(b)
+				updated = true
+			}
+		}
+		if updated {
+			UserDefaults.standard.set(Array(ownedKeys), forKey: ownedStorageKey)
+		}
 	}
 
 	func fetchApps() async {
@@ -423,26 +515,32 @@ class RoomStoreViewModel: ObservableObject {
 		installStage = .idle
 		progressValue = 0.0
 		activeApp = nil
-		endBackgroundTask()
+		stopBackgroundKeepAlive()
 	}
 
-	private func beginBackgroundTask() {
-		endBackgroundTask()
+	private func startBackgroundKeepAlive() {
+		stopBackgroundKeepAlive()
 		backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "RoomSilentSignInstall") { [weak self] in
 			Task { @MainActor in
-				self?.endBackgroundTask()
+				self?.stopBackgroundKeepAlive()
 			}
 		}
+		#if !targetEnvironment(macCatalyst)
+		BackgroundAudioManager.shared.start()
+		#endif
 	}
 
-	private func endBackgroundTask() {
+	private func stopBackgroundKeepAlive() {
 		if backgroundTaskID != .invalid {
 			UIApplication.shared.endBackgroundTask(backgroundTaskID)
 			backgroundTaskID = .invalid
 		}
+		#if !targetEnvironment(macCatalyst)
+		BackgroundAudioManager.shared.stop()
+		#endif
 	}
 
-	/// بدء التحميل + التوقيع الصامت + التثبيت المباشر في الخلفية
+	/// بدء التحميل + التوقيع الصامت + إظهار نافذة التثبيت الوسطية مباشرة بدون Safari
 	func startSilentSignAndInstall(
 		app: RoomStoreApp,
 		certificate: CertificatePair?,
@@ -461,16 +559,16 @@ class RoomStoreViewModel: ObservableObject {
 		}
 
 		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-		beginBackgroundTask()
+		startBackgroundKeepAlive()
 
 		activeApp = app
-		installStage = .signing
+		installStage = .downloading
 		progressValue = 0.02
 
 		let downloader = RoomIPADownloader(
 			onProgress: { [weak self] dlRatio in
-				guard let self, self.installStage == .signing else { return }
-				// المرحلة 1: التحميل يمثل من 2% إلى 65%
+				guard let self, self.installStage == .downloading else { return }
+				// التحميل: من 2% إلى 65%
 				self.progressValue = 0.02 + (dlRatio * 0.63)
 			},
 			onCompletion: { [weak self] result in
@@ -505,7 +603,8 @@ class RoomStoreViewModel: ObservableObject {
 		importedApps: FetchedResults<Imported>,
 		signedApps: FetchedResults<Signed>
 	) {
-		progressValue = 0.68
+		installStage = .signing
+		progressValue = 0.67
 		let existingImportedUUIDs = Set(importedApps.compactMap(\.uuid))
 		let existingSignedUUIDs = Set(signedApps.compactMap(\.uuid))
 
@@ -519,21 +618,21 @@ class RoomStoreViewModel: ObservableObject {
 			return
 		}
 
-		// تحريك شريط التقدم بسلاسة أثناء فك الضغط والتوقيع
 		progressTimer?.invalidate()
-		progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+		progressTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
 			Task { @MainActor in
 				guard let self, self.installStage == .signing else { return }
-				if self.progressValue < 0.95 {
-					self.progressValue += 0.015
+				if self.progressValue < 0.96 {
+					self.progressValue += 0.01
 				}
 			}
 		}
 
 		Task {
-			// انتظار ظهور التطبيق المستورد في قاعدة البيانات
+			// انتظار ظهور التطبيق الجديد المستورد (حتى 60 ثانية للملفات الكبيرة مثل 500MB)
 			var targetImported: Imported? = nil
-			for _ in 0..<32 {
+			for _ in 0..<240 {
+				if self.installStage == .idle { return }
 				if let found = importedApps.first(where: { !existingImportedUUIDs.contains($0.uuid ?? "") }) {
 					targetImported = found
 					break
@@ -541,17 +640,13 @@ class RoomStoreViewModel: ObservableObject {
 				try? await Task.sleep(nanoseconds: 250_000_000)
 			}
 
-			if targetImported == nil {
-				targetImported = importedApps.first
-			}
-
 			guard let importedApp = targetImported else {
-				self.errorMessage = "تعذر تجهيز التطبيق للتوقيع."
+				self.errorMessage = "استغرق فك ضغط التطبيق وقتاً طويلاً، حاول مرة أخرى."
 				self.cancelSilentInstall()
 				return
 			}
 
-			self.progressValue = 0.76
+			self.progressValue = 0.78
 			let options = OptionsManager.shared.options
 
 			FR.signPackageFile(
@@ -571,38 +666,66 @@ class RoomStoreViewModel: ObservableObject {
 						return
 					}
 
-					// حذف النسخة غير الموقعة المؤقتة
 					if !importedApp.isSigned {
 						Storage.shared.deleteApp(for: importedApp)
 					}
 
 					self.progressValue = 1.0
 					self.installStage = .readyToInstall
+					self.markAsOwned(app)
 					UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-					// العثور على التطبيق الموقّع وتشغيل نافذة التثبيت الأصلية فوراً
+					// تجهيز السيرفر المحلي وإطلاق نافذة iOS الوسطية مباشرة بدون متصفح خارجي
 					Task {
 						try? await Task.sleep(nanoseconds: 350_000_000)
 						let newestSigned = signedApps.first(where: { !existingSignedUUIDs.contains($0.uuid ?? "") }) ?? signedApps.first
 						if let newestSigned {
-							self.signedInstallSheetApp = AnyApp(base: newestSigned)
+							await self.triggerDirectNativeInstall(for: newestSigned)
 						}
-						NotificationCenter.default.post(name: Notification.Name("Feather.installApp"), object: nil)
-
-						// إبقاء السيرفر والمهمة الخلفية نشطين 45 ثانية لضمان اكتمال التثبيت حتى بعد الخروج للشاشة الرئيسية
-						try? await Task.sleep(nanoseconds: 45_000_000_000)
-						self.endBackgroundTask()
 					}
 				}
 			}
 		}
 	}
 
-	func triggerInstallPromptAgain(signedApps: FetchedResults<Signed>) {
-		if let latest = signedApps.first {
-			signedInstallSheetApp = AnyApp(base: latest)
+	private func triggerDirectNativeInstall(for signedApp: Signed) async {
+		do {
+			let statusVM = InstallerStatusViewModel(isIdevice: false)
+			let server = try ServerInstaller(app: signedApp, viewModel: statusVM)
+			self.activeStatusVM = statusVM
+			self.activeServerInstaller = server
+
+			let handler = ArchiveHandler(app: signedApp, viewModel: statusVM)
+			try await handler.move()
+			let packageUrl = try await handler.archive()
+
+			server.packageUrl = packageUrl
+			statusVM.status = .ready
+
+			if let itunesURL = URL(string: server.iTunesLink) {
+				self.activeITunesURL = itunesURL
+				await UIApplication.shared.open(itunesURL)
+			}
+
+			// إبقاء السيرفر والصوت الخلفي نشطين 60 ثانية لضمان اكتمال التثبيت حتى لو خرج المستخدم من التطبيق
+			try? await Task.sleep(nanoseconds: 60_000_000_000)
+			if self.installStage == .readyToInstall {
+				self.installStage = .idle
+				self.activeApp = nil
+			}
+			self.activeServerInstaller = nil
+			self.activeStatusVM = nil
+			self.stopBackgroundKeepAlive()
+		} catch {
+			self.errorMessage = "تعذر بدء التثبيت المباشر: \(error.localizedDescription)"
+			self.cancelSilentInstall()
 		}
-		NotificationCenter.default.post(name: Notification.Name("Feather.installApp"), object: nil)
+	}
+
+	func reopenNativeInstallPrompt() {
+		if let url = activeITunesURL {
+			UIApplication.shared.open(url)
+		}
 	}
 
 	static let instagramBeeApp = RoomStoreApp(
@@ -665,7 +788,7 @@ struct RoomTodayView: View {
 							Button {
 								selectedApp = app
 							} label: {
-								TodayVisualCard(app: app)
+								TodayVisualCard(app: app, viewModel: viewModel)
 							}
 							.buttonStyle(.plain)
 						}
@@ -690,7 +813,7 @@ struct RoomTodayView: View {
 								Button {
 									selectedApp = game
 								} label: {
-									RoomStoreAppRow(app: game)
+									RoomStoreAppRow(app: game, viewModel: viewModel)
 										.padding(.horizontal)
 								}
 								.buttonStyle(.plain)
@@ -716,7 +839,7 @@ struct RoomTodayView: View {
 								Button {
 									selectedApp = app
 								} label: {
-									RoomStoreAppRow(app: app)
+									RoomStoreAppRow(app: app, viewModel: viewModel)
 										.padding(.horizontal)
 								}
 								.buttonStyle(.plain)
@@ -726,7 +849,7 @@ struct RoomTodayView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 95)
+			.padding(.bottom, viewModel.installStage != .idle ? 150 : 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
@@ -741,6 +864,7 @@ struct RoomTodayView: View {
 
 struct TodayVisualCard: View {
 	let app: RoomStoreApp
+	@ObservedObject var viewModel: RoomStoreViewModel
 
 	var body: some View {
 		ZStack {
@@ -798,13 +922,7 @@ struct TodayVisualCard: View {
 
 					Spacer()
 
-					Text("حصول")
-						.font(.subheadline.bold())
-						.padding(.horizontal, 18)
-						.padding(.vertical, 7)
-						.background(Color.white.opacity(0.22))
-						.foregroundStyle(.white)
-						.clipShape(Capsule())
+					RoomAppActionBadge(app: app, viewModel: viewModel, lightStyle: true)
 				}
 			}
 			.padding(20)
@@ -912,7 +1030,7 @@ struct RoomAppsView: View {
 							Button {
 								selectedApp = app
 							} label: {
-								RoomStoreAppRow(app: app)
+								RoomStoreAppRow(app: app, viewModel: viewModel)
 									.padding(.horizontal)
 							}
 							.buttonStyle(.plain)
@@ -931,7 +1049,7 @@ struct RoomAppsView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 95)
+			.padding(.bottom, viewModel.installStage != .idle ? 150 : 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
@@ -1008,7 +1126,7 @@ struct RoomGamesView: View {
 							Button {
 								selectedApp = game
 							} label: {
-								RoomStoreAppRow(app: game)
+								RoomStoreAppRow(app: game, viewModel: viewModel)
 									.padding(.horizontal)
 							}
 							.buttonStyle(.plain)
@@ -1017,7 +1135,7 @@ struct RoomGamesView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 95)
+			.padding(.bottom, viewModel.installStage != .idle ? 150 : 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
@@ -1220,13 +1338,7 @@ struct RoomSearchView: View {
 
 									Spacer()
 
-									Text("حصول")
-										.font(.subheadline.bold())
-										.padding(.horizontal, 18)
-										.padding(.vertical, 6)
-										.background(Color.white.opacity(0.16))
-										.foregroundStyle(.blue)
-										.clipShape(Capsule())
+									RoomAppActionBadge(app: app, viewModel: viewModel)
 								}
 								.padding(isFirstFeatured ? 12 : 4)
 								.background(
@@ -1291,7 +1403,7 @@ struct RoomSearchView: View {
 				}
 			}
 			.padding(.top, 10)
-			.padding(.bottom, 95)
+			.padding(.bottom, viewModel.installStage != .idle ? 150 : 95)
 		}
 		.background(Color.black.ignoresSafeArea())
 		.environment(\.layoutDirection, .rightToLeft)
@@ -1611,70 +1723,14 @@ struct RoomAppDetailView: View {
 			// المنطقة السفلية: بطاقة التقدم العائمة + شريط الأزرار
 			VStack(spacing: 10) {
 				if isThisAppActive {
-					HStack(spacing: 12) {
-						RoomAppIconView(urlString: app.iconURL, size: 42, radius: 11)
-
-						VStack(alignment: .leading, spacing: 5) {
-							Text(app.name)
-								.font(.subheadline.bold())
-								.foregroundStyle(.white)
-								.lineLimit(1)
-
-							if viewModel.installStage == .readyToInstall {
-								HStack(spacing: 4) {
-									Text("تم التوقيع")
-										.foregroundStyle(.green)
-									Image(systemName: "checkmark")
-										.font(.caption2.bold())
-										.foregroundStyle(.green)
-									Text("• جارِ التثبيت على الآيفون")
-										.foregroundStyle(.gray)
-								}
-								.font(.caption)
-								.lineLimit(1)
-							} else {
-								Text("جارِ التوقيع \(percentInt)%")
-									.font(.caption)
-									.foregroundStyle(.gray)
-							}
-
-							GeometryReader { geo in
-								ZStack(alignment: .leading) {
-									Capsule()
-										.fill(Color.white.opacity(0.14))
-										.frame(height: 3.5)
-									Capsule()
-										.fill(viewModel.installStage == .readyToInstall ? Color.green : Color.blue)
-										.frame(width: max(8, geo.size.width * viewModel.progressValue), height: 3.5)
-										.animation(.easeOut(duration: 0.25), value: viewModel.progressValue)
-								}
-							}
-							.frame(height: 4)
+					RoomFloatingInstallBar(
+						app: app,
+						viewModel: viewModel,
+						onTap: {},
+						onActionTap: {
+							viewModel.reopenNativeInstallPrompt()
 						}
-
-						Spacer()
-
-						Button {
-							viewModel.cancelSilentInstall()
-						} label: {
-							Circle()
-								.fill(Color.white.opacity(0.12))
-								.frame(width: 28, height: 28)
-								.overlay(
-									Image(systemName: "xmark")
-										.font(.caption2.bold())
-										.foregroundStyle(.white.opacity(0.8))
-								)
-						}
-					}
-					.padding(.horizontal, 14)
-					.padding(.vertical, 10)
-					.background(Color(white: 0.13))
-					.overlay(
-						RoundedRectangle(cornerRadius: 18, style: .continuous)
-							.stroke(Color.white.opacity(0.08), lineWidth: 1)
 					)
-					.clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 					.padding(.horizontal)
 					.transition(.move(edge: .bottom).combined(with: .opacity))
 				}
@@ -1682,7 +1738,7 @@ struct RoomAppDetailView: View {
 				HStack(spacing: 10) {
 					Button {
 						if isThisAppActive && viewModel.installStage == .readyToInstall {
-							viewModel.triggerInstallPromptAgain(signedApps: signedApps)
+							viewModel.reopenNativeInstallPrompt()
 						} else if !isThisAppActive {
 							viewModel.startSilentSignAndInstall(
 								app: app,
@@ -1693,7 +1749,7 @@ struct RoomAppDetailView: View {
 						}
 					} label: {
 						ZStack(alignment: .leading) {
-							if isThisAppActive && viewModel.installStage == .signing {
+							if isThisAppActive && (viewModel.installStage == .downloading || viewModel.installStage == .signing) {
 								GeometryReader { geo in
 									Color.blue.opacity(0.32)
 										.frame(width: geo.size.width * viewModel.progressValue)
@@ -1702,7 +1758,10 @@ struct RoomAppDetailView: View {
 							}
 
 							HStack(spacing: 8) {
-								if isThisAppActive && viewModel.installStage == .signing {
+								if isThisAppActive && viewModel.installStage == .downloading {
+									Text("جارِ التحميل \(percentInt)%")
+										.font(.headline)
+								} else if isThisAppActive && viewModel.installStage == .signing {
 									Text("جارِ التوقيع \(percentInt)%")
 										.font(.headline)
 								} else if isThisAppActive && viewModel.installStage == .readyToInstall {
@@ -1713,7 +1772,7 @@ struct RoomAppDetailView: View {
 								} else {
 									Image(systemName: "arrow.down.to.line")
 										.font(.headline)
-									Text("تثبيت • \(app.size)")
+									Text(viewModel.isAppOwned(app) ? "تثبيت مجدداً • \(app.size)" : "تثبيت • \(app.size)")
 										.font(.headline)
 								}
 							}
@@ -1725,11 +1784,11 @@ struct RoomAppDetailView: View {
 						.background(
 							app.downloadURL.isEmpty
 								? Color.gray
-								: (isThisAppActive && viewModel.installStage == .signing ? Color(white: 0.16) : Color.blue)
+								: (isThisAppActive && viewModel.installStage != .readyToInstall ? Color(white: 0.16) : Color.blue)
 						)
 						.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 					}
-					.disabled(app.downloadURL.isEmpty || (isThisAppActive && viewModel.installStage == .signing))
+					.disabled(app.downloadURL.isEmpty || (isThisAppActive && viewModel.installStage != .readyToInstall))
 
 					Button {
 						UIPasteboard.general.string = app.downloadURL
@@ -1759,11 +1818,6 @@ struct RoomAppDetailView: View {
 			.background(Color.black.opacity(0.94))
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.sheet(item: $viewModel.signedInstallSheetApp) { signedItem in
-			InstallPreviewView(app: signedItem.base, isSharing: false)
-				.presentationDetents([.height(200)])
-				.presentationDragIndicator(.visible)
-		}
 		.sheet(item: $selectedSimilarApp) { nextApp in
 			RoomAppDetailView(app: nextApp, viewModel: viewModel)
 		}
@@ -1785,9 +1839,152 @@ struct RoomAppDetailView: View {
 	}
 }
 
-// MARK: - 7. المكونات المساعدة
+// MARK: - 7. المكونات المساعدة (الشريط العائم + مؤشر التحميل الدائري + شارة ممتلك)
+struct RoomFloatingInstallBar: View {
+	let app: RoomStoreApp
+	@ObservedObject var viewModel: RoomStoreViewModel
+	var onTap: () -> Void
+	var onActionTap: () -> Void
+
+	private var percentInt: Int {
+		Int(min(max(viewModel.progressValue * 100, 0), 100))
+	}
+
+	var body: some View {
+		HStack(spacing: 12) {
+			Button(action: onTap) {
+				HStack(spacing: 12) {
+					RoomAppIconView(urlString: app.iconURL, size: 42, radius: 11)
+
+					VStack(alignment: .leading, spacing: 5) {
+						Text(app.name)
+							.font(.subheadline.bold())
+							.foregroundStyle(.white)
+							.lineLimit(1)
+
+						if viewModel.installStage == .readyToInstall {
+							HStack(spacing: 4) {
+								Text("تم التوقيع")
+									.foregroundStyle(.green)
+								Image(systemName: "checkmark")
+									.font(.caption2.bold())
+									.foregroundStyle(.green)
+								Text("• اضغط للتثبيت")
+									.foregroundStyle(.gray)
+							}
+							.font(.caption)
+							.lineLimit(1)
+						} else if viewModel.installStage == .downloading {
+							Text("جارِ التحميل \(percentInt)%")
+								.font(.caption)
+								.foregroundStyle(.gray)
+						} else {
+							Text("جارِ التوقيع \(percentInt)%")
+								.font(.caption)
+								.foregroundStyle(.gray)
+						}
+
+						GeometryReader { geo in
+							ZStack(alignment: .leading) {
+								Capsule()
+									.fill(Color.white.opacity(0.14))
+									.frame(height: 3.5)
+								Capsule()
+									.fill(viewModel.installStage == .readyToInstall ? Color.green : Color.blue)
+									.frame(width: max(8, geo.size.width * viewModel.progressValue), height: 3.5)
+									.animation(.easeOut(duration: 0.25), value: viewModel.progressValue)
+							}
+						}
+						.frame(height: 4)
+					}
+				}
+			}
+			.buttonStyle(.plain)
+
+			Spacer()
+
+			if viewModel.installStage == .readyToInstall {
+				Button(action: onActionTap) {
+					Text("تثبيت")
+						.font(.caption.bold())
+						.padding(.horizontal, 12)
+						.padding(.vertical, 6)
+						.background(Color.blue)
+						.foregroundStyle(.white)
+						.clipShape(Capsule())
+				}
+			}
+
+			Button {
+				viewModel.cancelSilentInstall()
+			} label: {
+				Circle()
+					.fill(Color.white.opacity(0.12))
+					.frame(width: 28, height: 28)
+					.overlay(
+						Image(systemName: "xmark")
+							.font(.caption2.bold())
+							.foregroundStyle(.white.opacity(0.8))
+					)
+			}
+		}
+		.padding(.horizontal, 14)
+		.padding(.vertical, 10)
+		.background(Color(white: 0.13).opacity(0.98))
+		.overlay(
+			RoundedRectangle(cornerRadius: 18, style: .continuous)
+				.stroke(Color.white.opacity(0.1), lineWidth: 1)
+		)
+		.clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+		.shadow(color: .black.opacity(0.55), radius: 14, y: 6)
+		.environment(\.layoutDirection, .rightToLeft)
+	}
+}
+
+struct RoomAppActionBadge: View {
+	let app: RoomStoreApp
+	@ObservedObject var viewModel: RoomStoreViewModel
+	var lightStyle: Bool = false
+
+	var body: some View {
+		if viewModel.isAppInProgress(app) {
+			// دائرة تحميل وتوقيع متحركة بجانب التطبيق في القائمة
+			ZStack {
+				Circle()
+					.stroke(Color.white.opacity(0.18), lineWidth: 2.5)
+				Circle()
+					.trim(from: 0, to: max(0.08, viewModel.progressValue))
+					.stroke(Color.blue, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+					.rotationEffect(.degrees(-90))
+					.animation(.easeOut(duration: 0.25), value: viewModel.progressValue)
+				RoundedRectangle(cornerRadius: 2)
+					.fill(Color.blue)
+					.frame(width: 8, height: 8)
+			}
+			.frame(width: 30, height: 30)
+		} else if viewModel.isAppOwned(app) {
+			Text("ممتلك")
+				.font(.subheadline.bold())
+				.padding(.horizontal, 16)
+				.padding(.vertical, 6)
+				.background(lightStyle ? Color.white.opacity(0.18) : Color.white.opacity(0.1))
+				.foregroundStyle(lightStyle ? .white.opacity(0.9) : .gray)
+				.clipShape(Capsule())
+		} else {
+			Text("حصول")
+				.font(.subheadline.bold())
+				.padding(.horizontal, 18)
+				.padding(.vertical, 6)
+				.background(lightStyle ? Color.white.opacity(0.24) : Color.white.opacity(0.15))
+				.foregroundStyle(lightStyle ? .white : .blue)
+				.clipShape(Capsule())
+		}
+	}
+}
+
 struct RoomStoreAppRow: View {
 	let app: RoomStoreApp
+	@ObservedObject var viewModel: RoomStoreViewModel
 
 	var body: some View {
 		HStack(spacing: 12) {
@@ -1806,13 +2003,7 @@ struct RoomStoreAppRow: View {
 
 			Spacer()
 
-			Text("حصول")
-				.font(.subheadline.bold())
-				.padding(.horizontal, 18)
-				.padding(.vertical, 6)
-				.background(Color.white.opacity(0.15))
-				.foregroundStyle(.blue)
-				.clipShape(Capsule())
+			RoomAppActionBadge(app: app, viewModel: viewModel)
 		}
 	}
 }
